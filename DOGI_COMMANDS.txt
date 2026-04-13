@@ -1,0 +1,92 @@
+# DOGI Scan Commands
+생성 시각: 2026-04-13 07:05:53
+프로젝트 경로: /home/jangdonggun/포트폴리오/traffic-ai
+프로젝트 이름: traffic-ai
+
+[스캔 결과]
+- git 저장소: YES
+- docker-compose 파일: NO
+- Dockerfile: NO
+- Ollama 추천 런타임: image=python:3.11-slim, service=app
+
+==================================================
+1) 기본 환경 점검
+==================================================
+pwd
+ls -la
+python3 --version
+git --version
+docker --version
+docker compose version
+
+==================================================
+2) Docker Compose 실행 명령 템플릿
+==================================================
+# compose 파일이 있으면
+docker compose config
+docker compose build
+docker compose up -d
+docker compose ps
+docker compose logs -f --tail=200
+
+# 컨테이너 쉘 접속 예시
+docker compose exec app sh
+# 또는 이름 직접 지정
+docker exec -it traffic-ai-app-1 sh
+
+# 정리
+docker compose down
+
+==================================================
+3) Dockerfile 기반 단독 실행 템플릿
+==================================================
+docker build -t traffic-ai:local .
+docker run -d --name traffic-ai -p 8000:8000 traffic-ai:local
+docker logs -f traffic-ai
+docker exec -it traffic-ai sh
+docker rm -f traffic-ai
+
+==================================================
+4) Git 브랜치/Push/Merge 템플릿
+==================================================
+# 현재 브랜치 확인
+git status
+git branch
+
+# 작업 브랜치 생성/전환
+git checkout -b feature/traffic-ai-setup
+
+# 변경 반영
+git add .
+git commit -m "setup: add docker/git command templates via dogi scan"
+
+# 원격 반영
+git push -u origin feature/traffic-ai-setup
+
+# 기본 브랜치로 병합(로컬 기준 예시)
+git checkout main
+git pull origin main
+git merge --no-ff feature/traffic-ai-setup
+git push origin main
+
+==================================================
+5) 선택: 초기 docker-compose.yml 생성 템플릿
+==================================================
+cat > docker-compose.yml <<'EOF'
+services:
+  app:
+    image: python:3.11-slim
+    working_dir: /workspace
+    volumes:
+      - ./:/workspace
+    command: bash -lc "python -V && sleep infinity"
+EOF
+
+docker compose up -d
+docker compose exec app sh
+
+==================================================
+주의사항
+==================================================
+- merge/push 전에 반드시 git status와 diff를 확인하세요.
+- 운영 서버에서는 branch protection / PR merge를 권장합니다.

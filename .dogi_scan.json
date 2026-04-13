@@ -1,0 +1,17 @@
+{
+  "runtime_hint": {
+    "image": "python:3.11-slim",
+    "command": "pip install -r requirements.txt && sleep infinity",
+    "service": "app"
+  },
+  "state": {
+    "project_name": "traffic-ai",
+    "git_repo": true,
+    "docker_compose_exists": false,
+    "dockerfile_exists": false,
+    "has_package_json": false,
+    "has_pyproject_toml": false,
+    "has_requirements_txt": true
+  },
+  "generated_at": "2026-04-13T07:05:53"
+}
