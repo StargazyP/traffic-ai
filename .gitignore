@@ -1,0 +1,20 @@
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+*.so
+
+# 환경·비밀
+.env
+.env.*
+!.env.example
+
+# 모델 가중치 (run.sh 로 내려받음)
+models/*.pt
+*.pt
+
+# 로컬 벤더·백업(용량·중복 방지)
+.vendor/
+backups/

@@ -1,6 +1,10 @@
 fastapi
 uvicorn
-opencv-python
+websockets>=12
+python-dotenv
 ultralytics
+Pillow>=10.0
 numpy
 jinja2
+requests
+mysql-connector-python

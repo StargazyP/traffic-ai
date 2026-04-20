@@ -1,0 +1,12 @@
+tracker_type: bytetrack
+
+# Requested tuning
+track_thresh: 0.5
+match_thresh: 0.8
+track_buffer: 30
+
+# Keep ultralytics-compatible fields as well
+track_high_thresh: 0.5
+track_low_thresh: 0.1
+new_track_thresh: 0.25
+fuse_score: true

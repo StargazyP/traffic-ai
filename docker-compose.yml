@@ -1,0 +1,46 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: traffic-ai-app:local
+    working_dir: /workspace
+    volumes:
+      - ./:/workspace
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_USER: root
+      MYSQL_PASSWORD: traffic1234
+      MYSQL_DATABASE: traffic
+      PYTHONWARNINGS: ignore
+      GLOG_minloglevel: "2"
+      PYTORCH_DISABLE_NNPACK: "1"
+      TORCH_CPP_LOG_LEVEL: ERROR
+    depends_on:
+      - mysql
+    ports:
+      - "8000:8000"
+    command:
+      - python
+      - -m
+      - uvicorn
+      - app.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+
+  mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: traffic1234
+      MYSQL_DATABASE: traffic
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+
+volumes:
+  mysql_data:
