@@ -1,10 +1,14 @@
+name: traffic-ai
+
 services:
   app:
     build:
       context: .
       dockerfile: Dockerfile
     image: traffic-ai-app:local
+    container_name: traffic-ai-app
     working_dir: /workspace
+    restart: unless-stopped
     volumes:
       - ./:/workspace
     environment:
@@ -17,7 +21,8 @@ services:
       PYTORCH_DISABLE_NNPACK: "1"
       TORCH_CPP_LOG_LEVEL: ERROR
     depends_on:
-      - mysql
+      mysql:
+        condition: service_healthy
     ports:
       - "8000:8000"
     command:
@@ -32,6 +37,7 @@ services:
 
   mysql:
     image: mysql:8.0
+    container_name: traffic-ai-mysql
     restart: unless-stopped
     environment:
       MYSQL_ROOT_PASSWORD: traffic1234
@@ -41,6 +47,21 @@ services:
     volumes:
       - mysql_data:/var/lib/mysql
       - ./schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "mysqladmin",
+          "ping",
+          "-h",
+          "127.0.0.1",
+          "-uroot",
+          "-ptraffic1234",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 20s
 
 volumes:
   mysql_data:

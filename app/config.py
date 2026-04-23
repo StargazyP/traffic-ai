@@ -74,6 +74,14 @@ CCTV_ROTATION_SEC = int(os.getenv("CCTV_ROTATION_SEC", "30"))
 _line_y = float(os.getenv("LINE_Y_RATIO", "0.6"))
 LINE_Y_RATIO = min(0.95, max(0.05, _line_y))
 
+# 지점별 가상선 위치 오버라이드 (예: 하남분기점은 시야 특성상 별도 튜닝)
+_line_y_hanam_raw = (os.getenv("LINE_Y_RATIO_HANAM", "0.341") or "").strip()
+try:
+    _line_y_hanam = float(_line_y_hanam_raw) if _line_y_hanam_raw else LINE_Y_RATIO
+except ValueError:
+    _line_y_hanam = LINE_Y_RATIO
+LINE_Y_RATIO_HANAM = min(0.95, max(0.05, _line_y_hanam))
+
 # 지점별 URL이 비어 있으면 `CCTV_URL` 값으로 채움(테스트용: 한 스트림으로 5지점 이름만 바꿔 로테이션).
 # DB `vehicle_count.cctv_name`에는 한글 지점명이 저장됩니다.
 _FALLBACK_STREAM = (os.getenv("CCTV_URL", "") or "").strip()
@@ -98,6 +106,14 @@ def get_yolo_imgsz_for_cctv(cctv_name: str) -> int:
     if "하남" in name:
         return int(YOLO_IMGSZ_HANAM)
     return int(YOLO_IMGSZ)
+
+
+def get_line_y_ratio_for_cctv(cctv_name: str) -> float:
+    """지점별 가상선 비율. 하남은 별도 환경변수로 미세 조정 가능."""
+    name = (cctv_name or "").strip()
+    if "하남" in name:
+        return float(LINE_Y_RATIO_HANAM)
+    return float(LINE_Y_RATIO)
 
 
 def get_effective_rotation_sites() -> list[tuple[str, str]]:

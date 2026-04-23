@@ -265,13 +265,16 @@ def run_counter_stream(
             frame_h, frame_w = frame.shape[:2]
             payload_boxes = []
             try:
-                from app.config import YOLO_TRACK_CONF, LINE_Y_RATIO
+                from app.config import YOLO_TRACK_CONF, get_line_y_ratio_for_cctv
 
                 conf = float(YOLO_TRACK_CONF)
-                ratio = float(LINE_Y_RATIO)
+                ratio = float(get_line_y_ratio_for_cctv(cctv_name))
             except Exception:
                 conf = float(os.getenv("YOLO_TRACK_CONF", "0.4"))
-                ratio = float(os.getenv("LINE_Y_RATIO", "0.6"))
+                raw_ratio = os.getenv("LINE_Y_RATIO", "0.6")
+                if "하남" in (cctv_name or ""):
+                    raw_ratio = os.getenv("LINE_Y_RATIO_HANAM", raw_ratio)
+                ratio = float(raw_ratio)
             line_y = max(2, min(frame_h - 3, int(ratio * frame_h)))
 
             results = model.track(
