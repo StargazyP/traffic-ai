@@ -1,4 +1,5 @@
 """Large static HTML payloads for dashboard routes."""
+# DEFAULT_DEBUG_CCTVS 순서·이름은 app.config.CCTV_MULTICAST_SITES 지점명과 맞출 것.
 
 from __future__ import annotations
 
@@ -47,9 +48,9 @@ def traffic_live_html() -> str:
 def index_html() -> str:
     return """
     <html>
-    <head><title>Traffic AI — 5지점 로테이션</title></head>
+    <head><title>Traffic AI — 서울 유입 CCTV 로테이션</title></head>
     <body>
-      <h2>5지점 순차 캡처 (YOLO)</h2>
+      <h2>서울 유입 CCTV 순차 캡처 (YOLO)</h2>
       <p style="color:#555;max-width:720px;">
         상단 영상은 <strong>하단에서 지점 선택 후 [보기]</strong>로 재생합니다. KT/ITS m3u8은 동일 출처 <code>/hls</code> 프록시를 거칩니다. YOLO·카운트는 서버 OpenCV·<code>WebSocket</code>과 별개입니다.
       </p>
@@ -69,9 +70,9 @@ def index_html() -> str:
           • 라운드로빈으로 한 지점을 고른 뒤 큐에서 프레임 1개를 꺼내 순차 처리합니다(중간 프레임 보존).<br/>
           • <code>YOLO_FRAME_MAX_AGE_SEC</code>보다 오래된 <code>ts</code>면 추론을 건너뜁니다.</p>
           <p><strong>5) ROI → YOLO 추론</strong><br/>
-          전체 프레임 높이 <code>h</code>에서 <code>roi_y0 = int(h × YOLO_ROI_TOP_RATIO)</code>를 기본으로 사용하고, CCTV 이름에 「하남」이 포함되면 <code>YOLO_ROI_TOP_RATIO_HANAM</code>(기본 0.2)을 적용합니다. 가상선은 <code>line_y_global - roi_y0</code>로 ROI 좌표계에 맞춰 계산합니다.</p>
+          전체 프레임 높이 <code>h</code>에서 <code>roi_y0 = int(h × YOLO_ROI_TOP_RATIO)</code>를 기본으로 사용합니다. 가상선은 <code>line_y_global - roi_y0</code>로 ROI 좌표계에 맞춰 계산합니다.</p>
           <p><strong>6) YOLO detect + CCTV별 ByteTrack</strong><br/>
-          YOLO는 전역 단일 모델(<code>model = YOLO(MODEL_PATH)</code>)로 detect만 수행하고, 지점별 상태는 <code>get_tracker(cctv_name)</code>의 ByteTrack 인스턴스가 유지합니다. 검출 결과(<code>xyxy/conf/cls</code>)를 트래커 입력으로 변환해 <code>tracker.update(...)</code>를 호출하며, 트랙 id는 ByteTrack이 생성합니다. <code>imgsz</code>는 <code>YOLO_IMGSZ</code>(기본 960), 「하남」은 <code>YOLO_IMGSZ_HANAM</code>(기본 1280)을 사용합니다.</p>
+          YOLO는 전역 단일 모델(<code>model = YOLO(MODEL_PATH)</code>)로 detect만 수행하고, 지점별 상태는 <code>get_tracker(cctv_name)</code>의 ByteTrack 인스턴스가 유지합니다. 검출 결과(<code>xyxy/conf/cls</code>)를 트래커 입력으로 변환해 <code>tracker.update(...)</code>를 호출하며, 트랙 id는 ByteTrack이 생성합니다. <code>imgsz</code>는 <code>YOLO_IMGSZ</code>(기본 960)를 사용합니다.</p>
           <p><strong>7) 검출/트랙 처리</strong><br/>
           <code>boxes_obj</code>가 없거나 <code>xyxy</code>가 없으면 빈 검출로 트래커를 업데이트해 상태를 유지합니다. 검출이 있으면 차량 클래스(<code>vehicle_classes</code>)만 필터링해 ByteTrack 결과를 기준으로 카운트 루프를 진행합니다.</p>
           <p><strong>8) 카운트 규칙 (하이브리드: Line-cross + Flow)</strong><br/>
@@ -87,38 +88,17 @@ def index_html() -> str:
       <br><br>
       <div style="margin-top:8px;">
         <div style="font-size:12px;color:#666;margin-bottom:6px;">
-          YOLO 디버그(5대): 모델 입력 roi 크롭 + 박스. <code>DEBUG_IMAGE=1</code>
+          YOLO 디버그: 모델 입력 roi 크롭 + 박스. <code>DEBUG_IMAGE=1</code>
         </div>
-        <div id="debugGrid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:8px;max-width:1360px;">
-          <div class="dbg-card" data-cctv="판교분기점" style="border:1px solid #ccc;padding:6px;background:#f9f9f9;">
-            <div style="font-size:12px;font-weight:600;margin-bottom:4px;">판교분기점</div>
-            <img id="debugImage-판교분기점" alt="debug 판교분기점" style="width:100%;border:1px solid #ddd;background:#111;min-height:110px;" />
-            <div id="debugMeta-판교분기점" style="font-size:11px;color:#555;margin-top:4px;">대기중</div>
-          </div>
-          <div class="dbg-card" data-cctv="하남분기점" style="border:1px solid #ccc;padding:6px;background:#f9f9f9;">
-            <div style="font-size:12px;font-weight:600;margin-bottom:4px;">하남분기점</div>
-            <img id="debugImage-하남분기점" alt="debug 하남분기점" style="width:100%;border:1px solid #ddd;background:#111;min-height:110px;" />
-            <div id="debugMeta-하남분기점" style="font-size:11px;color:#555;margin-top:4px;">대기중</div>
-          </div>
-          <div class="dbg-card" data-cctv="서창분기점" style="border:1px solid #ccc;padding:6px;background:#f9f9f9;">
-            <div style="font-size:12px;font-weight:600;margin-bottom:4px;">서창분기점</div>
-            <img id="debugImage-서창분기점" alt="debug 서창분기점" style="width:100%;border:1px solid #ddd;background:#111;min-height:110px;" />
-            <div id="debugMeta-서창분기점" style="font-size:11px;color:#555;margin-top:4px;">대기중</div>
-          </div>
-          <div class="dbg-card" data-cctv="김포" style="border:1px solid #ccc;padding:6px;background:#f9f9f9;">
-            <div style="font-size:12px;font-weight:600;margin-bottom:4px;">김포</div>
-            <img id="debugImage-김포" alt="debug 김포" style="width:100%;border:1px solid #ddd;background:#111;min-height:110px;" />
-            <div id="debugMeta-김포" style="font-size:11px;color:#555;margin-top:4px;">대기중</div>
-          </div>
-          <div class="dbg-card" data-cctv="광명" style="border:1px solid #ccc;padding:6px;background:#f9f9f9;">
-            <div style="font-size:12px;font-weight:600;margin-bottom:4px;">광명</div>
-            <img id="debugImage-광명" alt="debug 광명" style="width:100%;border:1px solid #ddd;background:#111;min-height:110px;" />
-            <div id="debugMeta-광명" style="font-size:11px;color:#555;margin-top:4px;">대기중</div>
-          </div>
-        </div>
+        <div id="debugGrid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:8px;max-width:1360px;"></div>
       </div>
       <pre id="yoloTelemetry" style="font-size:12px;color:#444;max-width:720px;white-space:pre-wrap;border-left:3px solid #ccc;padding-left:8px;">서버 YOLO: 로테이션 시작 후 여기에 추론 여부가 표시됩니다 (브라우저 영상과 무관).</pre>
-      <h3>실시간 카운트: <span id="countValue">0</span> <small id="currentCctv" style="color:#666;"></small></h3>
+      <h3>
+        실시간 카운트:
+        총 <span id="countValue">0</span>
+        (상행 <span id="upCountValue">0</span> / 하행 <span id="downCountValue">0</span>)
+        <small id="currentCctv" style="color:#666;"></small>
+      </h3>
       <div id="debugBox" style="
         position:fixed;
         right:10px;
@@ -135,14 +115,81 @@ def index_html() -> str:
         <pre id="logBox" style="height:220px; overflow:auto; border:1px solid #ccc; padding:8px;"></pre>
       </div>
       <script>
+        const DEFAULT_DEBUG_CCTVS = [
+          "수원신갈IC",
+          "판교분기점",
+          "서울TG",
+          "용인IC",
+          "신갈분기점",
+          "서평택분기점",
+          "비봉IC",
+          "매송나들목",
+          "장항IC",
+          "자유로분기점",
+          "일산IC",
+          "양주IC",
+          "의정부IC",
+          "동의정부IC북측",
+          "남구리IC",
+          "구리IC",
+          "중랑IC교",
+        ];
+        let debugCctvs = DEFAULT_DEBUG_CCTVS.slice();
+
+        function buildDebugCards() {
+          const grid = document.getElementById("debugGrid");
+          if (!grid) return;
+          grid.innerHTML = "";
+          for (const cctv of debugCctvs) {
+            const card = document.createElement("div");
+            card.className = "dbg-card";
+            card.setAttribute("data-cctv", cctv);
+            card.style.cssText = "border:1px solid #ccc;padding:6px;background:#f9f9f9;";
+            card.innerHTML = `
+              <div style="font-size:12px;font-weight:600;margin-bottom:4px;">${cctv}</div>
+              <img id="debugImage-${cctv}" alt="debug ${cctv}" style="width:100%;border:1px solid #ddd;background:#111;min-height:110px;" />
+              <div id="debugMeta-${cctv}" style="font-size:11px;color:#555;margin-top:4px;">대기중</div>
+            `;
+            grid.appendChild(card);
+          }
+        }
+
+        function ensureDebugCard(cctv) {
+          if (!cctv || debugCctvs.includes(cctv)) return;
+          debugCctvs.push(cctv);
+          buildDebugCards();
+        }
+
+        function loadDebugSites() {
+          return fetch("/preview-sites")
+            .then(r => r.json())
+            .then((data) => {
+              const names = (data.sites || [])
+                .map((site) => site.name)
+                .filter(Boolean);
+              debugCctvs = names.length ? names : DEFAULT_DEBUG_CCTVS.slice();
+              buildDebugCards();
+            })
+            .catch(() => {
+              debugCctvs = DEFAULT_DEBUG_CCTVS.slice();
+              buildDebugCards();
+            });
+        }
+
         let wsInfer = null;
         let wsPingTimer = null;
         let isRunning = false;
         const debug = document.getElementById("debugBox");
 
+        function fmtNumber(value, digits = 2) {
+          const n = Number(value);
+          return Number.isFinite(n) ? n.toFixed(digits) : "0.00";
+        }
+
         function updateDebugCard(msg) {
           const cctv = msg.cctv || "";
           if (!cctv) return;
+          ensureDebugCard(cctv);
           const img = document.getElementById("debugImage-" + cctv);
           const meta = document.getElementById("debugMeta-" + cctv);
           if (img && msg.debug_image) {
@@ -151,8 +198,15 @@ def index_html() -> str:
           if (meta) {
             meta.textContent =
               "count=" + (msg.site_count ?? 0) +
+              " | main=" + (msg.main_flow_count ?? 0) +
+              " | flow/s=" + fmtNumber(msg.flow_per_sec) +
+              " | dir=" + fmtNumber(msg.direction_score) +
+              " | valid=" + (msg.is_valid === false ? "N" : "Y") +
+              " | up=" + (msg.up_count ?? 0) +
+              " | down=" + (msg.down_count ?? 0) +
               " | roi_y0=" + (msg.roi_y0 ?? 0) +
               " | line_y=" + (msg.line_y ?? 0) +
+              " | bucket=" + (msg.time_bucket || "") +
               " | t=" + (msg.timestamp || "");
           }
         }
@@ -195,6 +249,8 @@ def index_html() -> str:
               .then(r => r.json())
               .then(s => {
                 document.getElementById("countValue").textContent = s.count ?? 0;
+                document.getElementById("upCountValue").textContent = s.up_count ?? 0;
+                document.getElementById("downCountValue").textContent = s.down_count ?? 0;
                 const name = s.cctv_name || "";
                 document.getElementById("currentCctv").textContent =
                   name ? "(" + name + ")" : "";
@@ -230,6 +286,12 @@ def index_html() -> str:
                 const el = document.getElementById("countValue");
                 if (el && typeof msg.count === "number")
                   el.textContent = msg.count;
+                const upEl = document.getElementById("upCountValue");
+                if (upEl && typeof msg.up_count === "number")
+                  upEl.textContent = msg.up_count;
+                const downEl = document.getElementById("downCountValue");
+                if (downEl && typeof msg.down_count === "number")
+                  downEl.textContent = msg.down_count;
                 const cctvEl = document.getElementById("currentCctv");
                 if (cctvEl && msg.cctv)
                   cctvEl.textContent = "(" + msg.cctv + ")";
@@ -245,6 +307,12 @@ def index_html() -> str:
                   cctv: msg.cctv,
                   count: msg.count,
                   site: msg.site_count,
+                  main_flow: msg.main_flow_count,
+                  flow_per_sec: msg.flow_per_sec,
+                  direction_score: msg.direction_score,
+                  valid: msg.is_valid,
+                  invalid_reason: msg.invalid_reason,
+                  time_bucket: msg.time_bucket,
                   roi_y0: msg.roi_y0,
                   line_y: msg.line_y,
                   boxes: (msg.boxes || []).length,
@@ -257,9 +325,18 @@ def index_html() -> str:
                   debug.innerHTML =
                     "CCTV: " + (msg.cctv || "") + "<br>" +
                     "COUNT: " + (msg.count ?? 0) + "<br>" +
+                    "MAIN FLOW: " + (msg.main_flow_count ?? 0) + "<br>" +
+                    "FLOW/S: " + fmtNumber(msg.flow_per_sec) + "<br>" +
+                    "DIR SCORE: " + fmtNumber(msg.direction_score) + "<br>" +
+                    "VALID: " + (msg.is_valid === false ? "false" : "true") + "<br>" +
+                    "INVALID: " + (msg.invalid_reason || "-") + "<br>" +
+                    "UP: " + (msg.up_count ?? 0) + "<br>" +
+                    "DOWN: " + (msg.down_count ?? 0) + "<br>" +
                     "SITE COUNT: " + (msg.site_count ?? 0) + "<br>" +
                     "ROI Y0: " + (msg.roi_y0 ?? 0) + "<br>" +
                     "LINE Y: " + (msg.line_y ?? 0) + "<br>" +
+                    "BUCKET: " + (msg.time_bucket || "") + "<br>" +
+                    "LAG: " + fmtNumber(msg.bucket_lag_sec) + "s<br>" +
                     "BOXES: " + ((msg.boxes && msg.boxes.length) ? msg.boxes.length : 0) + "<br>" +
                     "TRACKS: " + trackIds + "<br>" +
                     "TIME: " + (msg.timestamp || "");
@@ -339,6 +416,7 @@ def index_html() -> str:
         }
 
         // 최초 진입 시 서버 상태 반영
+        loadDebugSites();
         initFromServer();
       </script>
     </body>

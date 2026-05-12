@@ -1,4 +1,5 @@
 """YOLO inference worker thread and CCTV sequencer / FFmpeg ingest."""
+# [2026-04-28] 하남 전용 ROI/imgsz/판정 분기를 제거하고 공통 추론 규칙으로 통일.
 
 from __future__ import annotations
 
@@ -25,6 +26,33 @@ from app.ws_broadcast import schedule_broadcast, ws_detection_message, ws_segmen
 
 logger = logging.getLogger(__name__)
 
+
+def _main_flow_count(up_count: int, down_count: int) -> int:
+    return int(down_count if down_count > up_count else up_count)
+
+
+def _direction_score(up_count: int, down_count: int) -> float:
+    total = int(up_count) + int(down_count)
+    if total <= 0:
+        return 0.0
+    return (float(down_count) - float(up_count)) / float(total)
+
+
+def _time_bucket(ts: float, bucket_sec: int = 10) -> tuple[int, str]:
+    bucket = int(ts // bucket_sec) * bucket_sec
+    return bucket, datetime.fromtimestamp(bucket).isoformat(timespec="seconds")
+
+
+def _validity(count: int, prev_count: int | None) -> tuple[bool, str]:
+    if prev_count is None:
+        return True, ""
+    if count == 0 and prev_count > 10:
+        return False, "zero_after_active"
+    if prev_count > 0 and count > prev_count * 3:
+        return False, "spike_over_3x"
+    return True, ""
+
+
 def yolo_worker(main_loop: asyncio.AbstractEventLoop | None) -> None:
     """CCTV별 큐 라운드로빈 + per-CCTV 샘플 간격, 단일 GPU로 추론."""
     from yolo_mysql_counter import (
@@ -38,6 +66,7 @@ def yolo_worker(main_loop: asyncio.AbstractEventLoop | None) -> None:
             DEBUG_IMAGE,
             DEBUG_IMAGE_EVERY,
             YOLO_TRACK_CONF,
+            get_camera_config,
             get_yolo_imgsz_for_cctv,
         )
     except ImportError:
@@ -50,15 +79,12 @@ def yolo_worker(main_loop: asyncio.AbstractEventLoop | None) -> None:
 
         def get_yolo_imgsz_for_cctv(name: str) -> int:
             try:
-                base = max(320, min(1536, int(os.getenv("YOLO_IMGSZ", "960"))))
+                return max(320, min(1536, int(os.getenv("YOLO_IMGSZ", "960"))))
             except ValueError:
-                base = 960
-            if "하남" in (name or ""):
-                try:
-                    return max(320, min(1536, int(os.getenv("YOLO_IMGSZ_HANAM", "1280"))))
-                except ValueError:
-                    return 1280
-            return base
+                return 960
+
+        def get_camera_config(name: str) -> dict[str, float | str]:
+            return {}
 
     try:
         SAMPLE_INTERVAL = float(os.getenv("YOLO_SAMPLE_INTERVAL", "0.2"))
@@ -72,51 +98,12 @@ def yolo_worker(main_loop: asyncio.AbstractEventLoop | None) -> None:
         ROI_TOP_RATIO = float(os.getenv("YOLO_ROI_TOP_RATIO", "0.4"))
     except Exception:
         ROI_TOP_RATIO = 0.4
-    try:
-        ROI_TOP_RATIO_HANAM = float(os.getenv("YOLO_ROI_TOP_RATIO_HANAM", "0.10"))
-    except Exception:
-        ROI_TOP_RATIO_HANAM = 0.10
-    try:
-        ROI_LEFT_RATIO_HANAM = float(os.getenv("YOLO_ROI_LEFT_RATIO_HANAM", "0.02"))
-    except Exception:
-        ROI_LEFT_RATIO_HANAM = 0.02
-    try:
-        ROI_WIDTH_RATIO_HANAM = float(os.getenv("YOLO_ROI_WIDTH_RATIO_HANAM", "0.98"))
-    except Exception:
-        ROI_WIDTH_RATIO_HANAM = 0.98
-    try:
-        ROI_TOP_RATIO_SEOCHANG = float(os.getenv("YOLO_ROI_TOP_RATIO_SEOCHANG", "0.3"))
-    except Exception:
-        ROI_TOP_RATIO_SEOCHANG = 0.3
-    try:
-        ROI_LEFT_RATIO_SEOCHANG = float(os.getenv("YOLO_ROI_LEFT_RATIO_SEOCHANG", "0.0"))
-    except Exception:
-        ROI_LEFT_RATIO_SEOCHANG = 0.0
-    try:
-        ROI_WIDTH_RATIO_SEOCHANG = float(os.getenv("YOLO_ROI_WIDTH_RATIO_SEOCHANG", "1.0"))
-    except Exception:
-        ROI_WIDTH_RATIO_SEOCHANG = 1.0
     default_roi_cfg = dict(top=ROI_TOP_RATIO, left=0.0, width=1.0)
-    ROI_CONFIG = {
-        "하남": dict(
-            top=ROI_TOP_RATIO_HANAM,
-            left=ROI_LEFT_RATIO_HANAM,
-            width=ROI_WIDTH_RATIO_HANAM,
-        ),
-        "서창": dict(
-            top=ROI_TOP_RATIO_SEOCHANG,
-            left=ROI_LEFT_RATIO_SEOCHANG,
-            width=ROI_WIDTH_RATIO_SEOCHANG,
-        ),
-        "김포": dict(top=ROI_TOP_RATIO, left=0.0, width=1.0),
-    }
     try:
         from app.config import get_line_y_ratio_for_cctv
     except Exception:
         def get_line_y_ratio_for_cctv(name: str) -> float:
             raw = os.getenv("LINE_Y_RATIO", "0.6")
-            if "하남" in (name or ""):
-                raw = os.getenv("LINE_Y_RATIO_HANAM", raw)
             try:
                 val = float(raw)
             except ValueError:
@@ -130,6 +117,12 @@ def yolo_worker(main_loop: asyncio.AbstractEventLoop | None) -> None:
         stale_infer_gap = int(os.getenv("YOLO_STALE_INFER_GAP", "50"))
     except Exception:
         stale_infer_gap = 50
+    try:
+        counted_stale_infer_gap = int(
+            os.getenv("YOLO_COUNTED_STALE_INFER_GAP", str(max(stale_infer_gap * 6, 300)))
+        )
+    except Exception:
+        counted_stale_infer_gap = max(stale_infer_gap * 6, 300)
     hybrid_soft_enable = os.getenv("HYBRID_SOFT_ENABLE", "1").strip().lower() in {
         "1",
         "true",
@@ -156,9 +149,12 @@ def yolo_worker(main_loop: asyncio.AbstractEventLoop | None) -> None:
     track_history_per_cctv: dict[str, dict[int, list[tuple[int, int]]]] = {}
     counted_ids_per_cctv: dict[str, set[int]] = {}
     track_last_seen_infer: dict[str, dict[int, int]] = {}
+    counted_last_seen_infer: dict[str, dict[int, int]] = {}
     infer_seq_per_cctv: dict[str, int] = {}
 
     global_count_per_cctv: dict[str, int] = {}
+    first_seen_time_per_cctv: dict[str, float] = {}
+    prev_main_flow_per_cctv: dict[str, int] = {}
 
     try:
         track_iou = float(os.getenv("YOLO_TRACK_IOU", "0.3"))
@@ -223,33 +219,31 @@ def yolo_worker(main_loop: asyncio.AbstractEventLoop | None) -> None:
         frame = item["frame"]
         h, w = frame.shape[:2]
 
-        roi_cfg = default_roi_cfg
-        for key, cfg in ROI_CONFIG.items():
-            if key in (cctv_name or ""):
-                roi_cfg = cfg
-                break
+        camera_cfg = get_camera_config(cctv_name)
+        roi_cfg = {**default_roi_cfg, **camera_cfg}
 
-        roi_top_ratio = float(roi_cfg.get("top", ROI_TOP_RATIO))
+        roi_top_ratio = float(roi_cfg.get("roi_top", roi_cfg.get("top", ROI_TOP_RATIO)))
         roi_y0 = int(h * roi_top_ratio)
-        left_ratio = min(0.95, max(0.0, float(roi_cfg.get("left", 0.0))))
-        width_ratio = min(1.0, max(0.2, float(roi_cfg.get("width", 1.0))))
+        roi_y0 = max(0, min(h - 6, roi_y0))
+        left_ratio = min(0.95, max(0.0, float(roi_cfg.get("roi_left", roi_cfg.get("left", 0.0)))))
+        width_ratio = min(1.0, max(0.2, float(roi_cfg.get("roi_width", roi_cfg.get("width", 1.0)))))
         roi_x0 = int(w * left_ratio)
         roi_w = int(w * width_ratio)
         roi_x1 = min(w, roi_x0 + roi_w)
         roi = frame[roi_y0:h, roi_x0:roi_x1]
 
-        line_y_ratio = float(get_line_y_ratio_for_cctv(cctv_name))
-        line_y_global = max(2, min(h - 3, int(line_y_ratio * h)))
-        line_y = max(2, min((h - roi_y0) - 3, int(line_y_global - roi_y0)))
-        is_hanam = "하남" in (cctv_name or "")
+        roi_h = max(1, h - roi_y0)
+        if "line_y" in camera_cfg:
+            line_y = int(float(camera_cfg["line_y"]))
+            line_y = max(2, min(roi_h - 3, line_y))
+            line_y_global = roi_y0 + line_y
+        else:
+            line_y_ratio = float(get_line_y_ratio_for_cctv(cctv_name))
+            line_y_global = max(2, min(h - 3, int(line_y_ratio * h)))
+            line_y = max(2, min(roi_h - 3, int(line_y_global - roi_y0)))
         decision_min_move = float(effective_min_move)
         decision_soft_min_dy = float(flow_soft_min_dy)
         decision_soft_margin = int(line_soft_margin)
-        if is_hanam:
-            # 하남 안정형: 미세 흔들림으로 인한 중복 카운트를 줄이기 위해 판정을 더 엄격하게 적용.
-            decision_min_move = max(decision_min_move, 3.0)
-            decision_soft_min_dy = max(decision_soft_min_dy, 10.0)
-            decision_soft_margin = min(decision_soft_margin, 55)
         infer_seq_per_cctv[cctv_name] = infer_seq_per_cctv.get(cctv_name, 0) + 1
         infer_n = infer_seq_per_cctv[cctv_name]
 
@@ -257,6 +251,7 @@ def yolo_worker(main_loop: asyncio.AbstractEventLoop | None) -> None:
 
         yolo_imgsz = get_yolo_imgsz_for_cctv(cctv_name)
         tracker_model = get_tracker(cctv_name)
+        infer_started_at = time.time()
         results = st.model(
             roi,
             conf=float(YOLO_TRACK_CONF),
@@ -302,6 +297,8 @@ def yolo_worker(main_loop: asyncio.AbstractEventLoop | None) -> None:
         th_map = track_history_per_cctv.setdefault(cctv_name, {})
         counted = counted_ids_per_cctv.setdefault(cctv_name, set())
         tid_infer = track_last_seen_infer.setdefault(cctv_name, {})
+        counted_seen = counted_last_seen_infer.setdefault(cctv_name, {})
+        active_track_ids: set[int] = set()
 
         for tr in tracks:
             if len(tr) < 5:
@@ -310,10 +307,13 @@ def yolo_worker(main_loop: asyncio.AbstractEventLoop | None) -> None:
             tid = int(tid_raw)
             if tid < 0:
                 continue
+            active_track_ids.add(tid)
 
             x1i, y1i, x2i, y2i = map(int, [x1, y1, x2, y2])
             x1f, x2f = x1i + roi_x0, x2i + roi_x0
             y1f, y2f = y1i + roi_y0, y2i + roi_y0
+            cx = int((x1f + x2f) / 2)
+            cy = int((y1f + y2f) / 2)
 
             anchor_y = int(y2i)
             hist = th_map.setdefault(tid, [])
@@ -321,6 +321,8 @@ def yolo_worker(main_loop: asyncio.AbstractEventLoop | None) -> None:
             if len(hist) > MAX_TRACK_POSITIONS:
                 hist.pop(0)
             tid_infer[tid] = infer_n
+            if tid in counted:
+                counted_seen[tid] = infer_n
 
             boxes.append(
                 {
@@ -329,6 +331,18 @@ def yolo_worker(main_loop: asyncio.AbstractEventLoop | None) -> None:
                     "y1": y1f,
                     "x2": x2f,
                     "y2": y2f,
+                    "cx": cx,
+                    "cy": cy,
+                    "width": max(0, x2f - x1f),
+                    "height": max(0, y2f - y1f),
+                    "roi_x1": x1i,
+                    "roi_y1": y1i,
+                    "roi_x2": x2i,
+                    "roi_y2": y2i,
+                    "anchor_y": anchor_y,
+                    "history_len": len(hist),
+                    "last_seen_frame_id": infer_n,
+                    "counted": tid in counted,
                 }
             )
 
@@ -369,12 +383,15 @@ def yolo_worker(main_loop: asyncio.AbstractEventLoop | None) -> None:
                 continue
 
             counted.add(tid)
+            counted_seen[tid] = infer_n
             site_total = uh + dh + us + ds
             global_count_per_cctv[cctv_name] = site_total
             add_to_batch(cctv_name, uh, dh, us, ds)
             with st.counter_lock:
                 st.count_status["cctv_name"] = cctv_name
                 st.count_status["count"] = site_total
+                st.count_status["up_count"] = uh + us
+                st.count_status["down_count"] = dh + ds
                 st.count_status["logs"].append(
                     f"[{ts}] {tier} {direction} ↑h{uh}↓h{dh} ↑s{us}↓s{ds} "
                     f"SITE={site_total} tid={tid} line_y={line_y} @ {cctv_name}"
@@ -384,9 +401,12 @@ def yolo_worker(main_loop: asyncio.AbstractEventLoop | None) -> None:
 
         for tid_old in list(tid_infer.keys()):
             if infer_n - tid_infer[tid_old] > stale_infer_gap:
-                counted.discard(tid_old)
                 tid_infer.pop(tid_old, None)
                 th_map.pop(tid_old, None)
+        for tid_old in list(counted_seen.keys()):
+            if infer_n - counted_seen[tid_old] > counted_stale_infer_gap:
+                counted.discard(tid_old)
+                counted_seen.pop(tid_old, None)
 
         # 장시간 실행 시 CCTV별 트랙 상태 상한 가드
         if len(tid_infer) > 1000:
@@ -394,8 +414,13 @@ def yolo_worker(main_loop: asyncio.AbstractEventLoop | None) -> None:
             for tid_old in list(tid_infer.keys()):
                 if tid_infer[tid_old] < stale_cutoff:
                     tid_infer.pop(tid_old, None)
-                    counted.discard(tid_old)
                     th_map.pop(tid_old, None)
+        if len(counted_seen) > 2000:
+            keep_after = infer_n - max(1, counted_stale_infer_gap // 2)
+            for tid_old in list(counted_seen.keys()):
+                if counted_seen[tid_old] < keep_after:
+                    counted.discard(tid_old)
+                    counted_seen.pop(tid_old, None)
 
         debug_b64 = ""
         if DEBUG_IMAGE:
@@ -406,8 +431,10 @@ def yolo_worker(main_loop: asyncio.AbstractEventLoop | None) -> None:
                 try:
                     debug_b64 = debug_image_roi_jpeg_b64(
                         roi,
+                        roi_x0=roi_x0,
                         roi_y0=roi_y0,
                         boxes=boxes,
+                        line_y=line_y,
                     )
                 except Exception as exc:
                     logger.debug("debug_image: %s", exc)
@@ -420,30 +447,87 @@ def yolo_worker(main_loop: asyncio.AbstractEventLoop | None) -> None:
         d_tot = dh + ds
         site_total = u_tot + d_tot
         global_count_per_cctv[cctv_name] = site_total
+        metric_now = time.time()
+        metric_ts = cap_ts or metric_now
+        first_seen = first_seen_time_per_cctv.setdefault(cctv_name, metric_ts)
+        duration_sec = max(1.0, metric_ts - first_seen)
+        main_flow_count = _main_flow_count(u_tot, d_tot)
+        direction_score = _direction_score(u_tot, d_tot)
+        flow_per_sec = float(main_flow_count) / duration_sec
+        bucket_epoch, time_bucket = _time_bucket(metric_ts)
+        bucket_lag_sec = max(0.0, metric_now - metric_ts)
+        prev_main_flow = prev_main_flow_per_cctv.get(cctv_name)
+        is_valid, invalid_reason = _validity(main_flow_count, prev_main_flow)
+        if is_valid or prev_main_flow is None:
+            prev_main_flow_per_cctv[cctv_name] = main_flow_count
+        processed_ts = time.time()
+        capture_time = datetime.fromtimestamp(cap_ts).isoformat() if cap_ts else ""
+        processed_time = datetime.fromtimestamp(processed_ts).isoformat()
+        frame_age_ms = max(0.0, (processed_ts - cap_ts) * 1000.0) if cap_ts else 0.0
+        infer_latency_ms = max(0.0, (processed_ts - infer_started_at) * 1000.0)
         payload = {
             "cctv": cctv_name,
             "count": site_total,
             "site_count": site_total,
             "up_count": u_tot,
             "down_count": d_tot,
+            "main_flow_count": main_flow_count,
+            "direction_score": direction_score,
+            "duration_sec": duration_sec,
+            "flow_per_sec": flow_per_sec,
+            "time_bucket": time_bucket,
+            "time_bucket_epoch": bucket_epoch,
+            "bucket_lag_sec": bucket_lag_sec,
+            "is_valid": is_valid,
+            "invalid_reason": invalid_reason,
+            "prev_main_flow_count": prev_main_flow,
             "up_count_hard": uh,
             "down_count_hard": dh,
             "up_count_soft": us,
             "down_count_soft": ds,
             "frame_width": w,
             "frame_height": h,
+            "frame_id": infer_n,
+            "capture_ts": cap_ts,
+            "capture_time": capture_time,
+            "processed_ts": processed_ts,
+            "processed_time": processed_time,
+            "frame_age_ms": frame_age_ms,
+            "infer_latency_ms": infer_latency_ms,
             "roi_x0": roi_x0,
             "roi_y0": roi_y0,
+            "roi_x1": roi_x1,
+            "roi_y1": h,
+            "roi_width": max(0, roi_x1 - roi_x0),
+            "roi_height": max(0, h - roi_y0),
             "line_y": line_y,
+            "line_y_global": line_y_global,
             "zone_top": line_y - 2,
             "zone_bottom": line_y + 2,
+            "zone_top_global": roi_y0 + line_y - 2,
+            "zone_bottom_global": roi_y0 + line_y + 2,
             "boxes": boxes,
-            "timestamp": datetime.now().isoformat(),
+            "active_tracks": len(active_track_ids),
+            "persisted_tracks": len(tid_infer),
+            "counted_tracks": len(counted),
+            "timestamp": processed_time,
             "debug_image": debug_b64,
         }
 
         with st.status_lock:
             st.detection_status.update(payload)
+            st.count_status["cctv_name"] = cctv_name
+            st.count_status["count"] = site_total
+            st.count_status["up_count"] = u_tot
+            st.count_status["down_count"] = d_tot
+            st.count_status["main_flow_count"] = main_flow_count
+            st.count_status["direction_score"] = direction_score
+            st.count_status["duration_sec"] = duration_sec
+            st.count_status["flow_per_sec"] = flow_per_sec
+            st.count_status["time_bucket"] = time_bucket
+            st.count_status["bucket_lag_sec"] = bucket_lag_sec
+            st.count_status["is_valid"] = is_valid
+            st.count_status["invalid_reason"] = invalid_reason
 
         if main_loop is not None:
             schedule_broadcast(main_loop, ws_detection_message(payload))

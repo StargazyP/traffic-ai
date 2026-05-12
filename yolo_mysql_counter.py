@@ -5,6 +5,7 @@ import time
 from datetime import datetime
 from typing import Any
 
+# [2026-04-28] LINE_Y_RATIO_HANAM 분기 제거, 공통 LINE_Y_RATIO만 사용하도록 단순화.
 import numpy as np
 
 # CPU 환경에서 NNPACK 경고 로그를 억제
@@ -271,10 +272,7 @@ def run_counter_stream(
                 ratio = float(get_line_y_ratio_for_cctv(cctv_name))
             except Exception:
                 conf = float(os.getenv("YOLO_TRACK_CONF", "0.4"))
-                raw_ratio = os.getenv("LINE_Y_RATIO", "0.6")
-                if "하남" in (cctv_name or ""):
-                    raw_ratio = os.getenv("LINE_Y_RATIO_HANAM", raw_ratio)
-                ratio = float(raw_ratio)
+                ratio = float(os.getenv("LINE_Y_RATIO", "0.6"))
             line_y = max(2, min(frame_h - 3, int(ratio * frame_h)))
 
             results = model.track(

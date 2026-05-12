@@ -11,8 +11,10 @@ import numpy as np
 def debug_image_roi_jpeg_b64(
     roi: np.ndarray,
     *,
+    roi_x0: int = 0,
     roi_y0: int,
     boxes: list[dict],
+    line_y: int | None = None,
     max_w: int = 640,
     jpeg_quality: int = 60,
 ) -> str:
@@ -31,8 +33,8 @@ def debug_image_roi_jpeg_b64(
 
     rh, rw = roi.shape[:2]
     for b in boxes:
-        x1b = int(b["x1"])
-        x2b = int(b["x2"])
+        x1b = int(b["x1"]) - int(roi_x0)
+        x2b = int(b["x2"]) - int(roi_x0)
         y1b = int(b["y1"]) - int(roi_y0)
         y2b = int(b["y2"]) - int(roi_y0)
         x1b = max(0, min(rw - 1, x1b))
@@ -50,6 +52,26 @@ def debug_image_roi_jpeg_b64(
                 dr.text(pos, label, fill=(255, 255, 80), font=font)
             else:
                 dr.text(pos, label, fill=(255, 255, 80))
+
+    # ROI 크롭 기준 좌표: 상단 라인은 전역 픽셀 roi_y0(이미지에서는 y≈상단 경계 표시용)
+    y_roi_edge = max(2, min(rh - 2, int(rh * 0.01) + 1))
+    dr.line([(0, y_roi_edge), (rw - 1, y_roi_edge)], fill=(0, 215, 255), width=2)
+    top_lbl = f"ROI origin=({roi_x0},{roi_y0})"
+    if font is not None:
+        dr.text((4, max(2, min(rh - 18, y_roi_edge + 2))), top_lbl, fill=(0, 215, 255), font=font)
+    else:
+        dr.text((4, max(2, min(rh - 18, y_roi_edge + 2))), top_lbl, fill=(0, 215, 255))
+
+    if line_y is not None:
+        ly = int(line_y)
+        ly = max(0, min(rh - 1, ly))
+        dr.line([(0, ly), (rw - 1, ly)], fill=(255, 55, 55), width=3)
+        line_lbl = f"line_y(ROI)={int(line_y)}"
+        lbl_y = ly - 16 if ly > 22 else min(rh - 14, ly + 6)
+        if font is not None:
+            dr.text((4, max(2, lbl_y)), line_lbl, fill=(255, 220, 60), font=font)
+        else:
+            dr.text((4, max(2, lbl_y)), line_lbl, fill=(255, 220, 60))
 
     tw, th = im.size
     if tw > max_w:

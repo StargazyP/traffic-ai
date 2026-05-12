@@ -12,9 +12,29 @@ __pycache__/
 !.env.example
 
 # 모델 가중치 (run.sh 로 내려받음)
+models/
 models/*.pt
 *.pt
+*.pth
+*.onnx
+*.engine
 
 # 로컬 벤더·백업(용량·중복 방지)
 .vendor/
 backups/
+
+# 런타임 산출물·데이터
+logs/
+*.log
+*.db
+*.sqlite
+*.sqlite3
+*.csv
+*.mp4
+*.avi
+*.mov
+*.m3u8
+*.ts
+debug_frames/
+captures/
+outputs/

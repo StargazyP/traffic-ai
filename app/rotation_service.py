@@ -1,4 +1,4 @@
-"""5-site rotation orchestration (sequencer + YOLO worker threads)."""
+"""CCTV rotation orchestration (sequencer + YOLO worker threads)."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ def rotation_sites_configured() -> list[tuple[str, str]]:
 
 
 def rotation_start_impl(app: FastAPI) -> dict[str, Any]:
-    """5지점 순차 캡처·YOLO 워커 기동. HTTP 예외 없이 dict 반환 (lifespan·API 공용)."""
+    """서울 유입 CCTV 순차 캡처·YOLO 워커 기동. HTTP 예외 없이 dict 반환 (lifespan·API 공용)."""
     
 
     loop = getattr(app.state, "main_loop", None)
@@ -63,7 +63,7 @@ def rotation_start_impl(app: FastAPI) -> dict[str, Any]:
     with st.status_lock:
         ts = datetime.now().isoformat(timespec="seconds")
         st.count_status["logs"].append(
-            f"[{ts}] 5지점 로테이션 시작 → " + " → ".join(x[0] for x in sites)
+            f"[{ts}] 서울 유입 CCTV 로테이션 시작 → " + " → ".join(x[0] for x in sites)
         )
         if len(st.count_status["logs"]) > 50:
             st.count_status["logs"] = st.count_status["logs"][-50:]

@@ -77,7 +77,7 @@
 
 ### `app/its_client.py` + `app/its_rotation.py` (CCTV 소스 자동 수집)
 - ITS OpenAPI(`cctvInfo`)에서 CCTV 목록/URL 조회.
-- 로테이션 목표 지점(판교/하남/서창/김포/광명)을 패턴 매칭으로 자동 선택.
+- 서울 유입 로테이션 목표 지점을 패턴 매칭으로 자동 선택.
 - env에 지점별 URL이 없을 때 자동 조회 fallback으로 동작.
 
 ### `app/config.py` (설정 집약)
@@ -144,8 +144,8 @@
 
 ## 7) 설정 포인트(.env)
 - 필수/핵심
-  - `ITS_API_KEY`
-  - `CCTV_URL` 또는 `CCTV_URL_PANGYO` ... `CCTV_URL_GWANGMYEONG`
+  - `ITS_API_KEY` (ITS 자동 조회 사용 시)
+  - `CCTV_URL` 또는 `CCTV_URL_SUWON_SINGAL_IC` ... `CCTV_URL_JUNGNANG_IC_BRIDGE`
 - 추론/카운트 튜닝
   - `FRAME_SKIP`, `YOLO_TRACK_CONF`, `LINE_Y_RATIO`
   - `CCTV_ROTATION_SEC`, `YOLO_TRACK_IOU`, `MIN_MOVE`

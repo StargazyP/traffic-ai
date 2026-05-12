@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 
+# [2026-04-28] 서울 유입 핵심 축 로테이션 지점으로 확정.
 # 프로젝트 루트의 .env 자동 로드 (없으면 무시)
 try:
     from dotenv import load_dotenv
@@ -49,12 +50,6 @@ try:
     YOLO_IMGSZ = max(320, min(1280, int(os.getenv("YOLO_IMGSZ", "960"))))
 except ValueError:
     YOLO_IMGSZ = 960
-# 하남 등 원거리 지점: 별도 확대 (기본 1280). CCTV 이름에 "하남" 포함 시 적용
-try:
-    YOLO_IMGSZ_HANAM = max(320, min(1280, int(os.getenv("YOLO_IMGSZ_HANAM", "1280"))))
-except ValueError:
-    YOLO_IMGSZ_HANAM = 1280
-
 CONF_THRES = float(os.getenv("CONF_THRES", "0.25"))
 # 로테이션 루프 model.track() 전용 (검출률↑ 시 카운트 유리)
 YOLO_TRACK_CONF = float(os.getenv("YOLO_TRACK_CONF", "0.25"))
@@ -74,15 +69,31 @@ CCTV_ROTATION_SEC = int(os.getenv("CCTV_ROTATION_SEC", "30"))
 _line_y = float(os.getenv("LINE_Y_RATIO", "0.6"))
 LINE_Y_RATIO = min(0.95, max(0.05, _line_y))
 
-# 지점별 가상선 위치 오버라이드 (예: 하남분기점은 시야 특성상 별도 튜닝)
-_line_y_hanam_raw = (os.getenv("LINE_Y_RATIO_HANAM", "0.341") or "").strip()
-try:
-    _line_y_hanam = float(_line_y_hanam_raw) if _line_y_hanam_raw else LINE_Y_RATIO
-except ValueError:
-    _line_y_hanam = LINE_Y_RATIO
-LINE_Y_RATIO_HANAM = min(0.95, max(0.05, _line_y_hanam))
+# 서울 유입 17지점 YOLO ROI·가상선 특화.
+# - top/left/width: 전 프레임 대비 세로 크롭 시작 비율·가로 시작·가로 폭 (0~1).
+# - line_y: ROI 크롭 **내부** 픽셀 y (가상선). 미설정 시 LINE_Y_RATIO로 산출.
+# 매칭은 `get_camera_config`에서 CCTV 이름 부분문자열 중 **가장 긴 키** 우선 (남구리IC vs 구리IC 등).
+CAMERA_CONFIG: dict[str, dict[str, float]] = {
+    "동의정부IC북측": {"top": 0.36, "left": 0.0, "width": 1.0, "line_y": 172},
+    "수원신갈IC": {"top": 0.38, "left": 0.0, "width": 1.0, "line_y": 162},
+    "신갈분기점": {"top": 0.39, "left": 0.0, "width": 1.0, "line_y": 166},
+    "서평택분기점": {"top": 0.40, "left": 0.0, "width": 1.0, "line_y": 156},
+    "자유로분기점": {"top": 0.37, "left": 0.0, "width": 1.0, "line_y": 162},
+    "판교분기점": {"top": 0.37, "left": 0.05, "width": 0.92, "line_y": 178},
+    "서울TG": {"top": 0.34, "left": 0.0, "width": 1.0, "line_y": 152},
+    "용인IC": {"top": 0.40, "left": 0.0, "width": 1.0, "line_y": 156},
+    "비봉IC": {"top": 0.41, "left": 0.0, "width": 1.0, "line_y": 152},
+    "매송나들목": {"top": 0.43, "left": 0.0, "width": 1.0, "line_y": 132},
+    "장항IC": {"top": 0.40, "left": 0.0, "width": 1.0, "line_y": 148},
+    "일산IC": {"top": 0.39, "left": 0.0, "width": 1.0, "line_y": 156},
+    "양주IC": {"top": 0.38, "left": 0.0, "width": 1.0, "line_y": 164},
+    "의정부IC": {"top": 0.36, "left": 0.0, "width": 1.0, "line_y": 170},
+    "남구리IC": {"top": 0.37, "left": 0.03, "width": 0.94, "line_y": 168},
+    "중랑IC교": {"top": 0.39, "left": 0.04, "width": 0.92, "line_y": 162},
+    "구리IC": {"top": 0.37, "left": 0.03, "width": 0.94, "line_y": 170},
+}
 
-# 지점별 URL이 비어 있으면 `CCTV_URL` 값으로 채움(테스트용: 한 스트림으로 5지점 이름만 바꿔 로테이션).
+# 지점별 URL이 비어 있으면 `CCTV_URL` 값으로 채움(테스트용: 한 스트림으로 지점 이름만 바꿔 로테이션).
 # DB `vehicle_count.cctv_name`에는 한글 지점명이 저장됩니다.
 _FALLBACK_STREAM = (os.getenv("CCTV_URL", "") or "").strip()
 
@@ -92,32 +103,53 @@ def _u(key: str) -> str:
 
 
 CCTV_MULTICAST_SITES: list[tuple[str, str]] = [
-    ("판교분기점", _u("CCTV_URL_PANGYO")),
-    ("하남분기점", _u("CCTV_URL_HANAM")),
-    ("서창분기점", _u("CCTV_URL_SEOCHANG")),
-    ("김포", _u("CCTV_URL_GIMPO")),
-    ("광명", _u("CCTV_URL_GWANGMYEONG")),
+    ("수원신갈IC", _u("CCTV_URL_SUWON_SINGAL_IC")),
+    ("판교분기점", _u("CCTV_URL_PANGYO_JCT")),
+    ("서울TG", _u("CCTV_URL_SEOUL_TG")),
+    ("용인IC", _u("CCTV_URL_YONGIN_IC")),
+    ("신갈분기점", _u("CCTV_URL_SINGAL_JCT")),
+    ("서평택분기점", _u("CCTV_URL_SEOPYEONGTAEK_JCT")),
+    ("비봉IC", _u("CCTV_URL_BIBONG_IC")),
+    ("매송나들목", _u("CCTV_URL_MAESONG_IC")),
+    ("장항IC", _u("CCTV_URL_JANGHANG_IC")),
+    ("자유로분기점", _u("CCTV_URL_JAYURO_JCT")),
+    ("일산IC", _u("CCTV_URL_ILSAN_IC")),
+    ("양주IC", _u("CCTV_URL_YANGJU_IC")),
+    ("의정부IC", _u("CCTV_URL_UIJEONGBU_IC")),
+    ("동의정부IC북측", _u("CCTV_URL_EAST_UIJEONGBU_IC_NORTH")),
+    ("남구리IC", _u("CCTV_URL_NAMGURI_IC")),
+    ("구리IC", _u("CCTV_URL_GURI_IC")),
+    ("중랑IC교", _u("CCTV_URL_JUNGNANG_IC_BRIDGE")),
 ]
+
+# 로테이션 지점명 (프론트 디버그 카드·`/preview-sites` 와 동일 순서 유지 권장)
+CCTV_ROTATION_SITE_NAMES: tuple[str, ...] = tuple(n for n, _ in CCTV_MULTICAST_SITES)
 
 
 def get_yolo_imgsz_for_cctv(cctv_name: str) -> int:
-    """지점별 추론 입력 크기. 하남(원거리)은 더 큰 imgsz로 소형 차량 검출에 유리."""
-    name = (cctv_name or "").strip()
-    if "하남" in name:
-        return int(YOLO_IMGSZ_HANAM)
+    """지점별 예외 없이 공통 YOLO 입력 크기 사용."""
     return int(YOLO_IMGSZ)
 
 
+def get_camera_config(cctv_name: str) -> dict[str, float]:
+    """CCTV 이름에 매칭되는 ROI/line 튜닝. 부분문자열이 여러 개면 더 긴 지점명 키 우선."""
+    name = cctv_name or ""
+    best_key = ""
+    best: dict[str, float] | None = None
+    for key, cfg in CAMERA_CONFIG.items():
+        if key in name and len(key) > len(best_key):
+            best_key = key
+            best = cfg
+    return dict(best) if best else {}
+
+
 def get_line_y_ratio_for_cctv(cctv_name: str) -> float:
-    """지점별 가상선 비율. 하남은 별도 환경변수로 미세 조정 가능."""
-    name = (cctv_name or "").strip()
-    if "하남" in name:
-        return float(LINE_Y_RATIO_HANAM)
+    """지점별 예외 없이 공통 가상선 비율 사용."""
     return float(LINE_Y_RATIO)
 
 
 def get_effective_rotation_sites() -> list[tuple[str, str]]:
-    """환경변수로 URL이 하나라도 있으면 그 목록만 사용. 전부 비어 있으면 ITS API로 5지점 URL 자동 조회."""
+    """환경변수로 URL이 하나라도 있으면 그 목록만 사용. 전부 비어 있으면 ITS API로 자동 조회."""
     env_sites = [(n, u.strip()) for n, u in CCTV_MULTICAST_SITES if (u or "").strip()]
     if env_sites:
         return env_sites

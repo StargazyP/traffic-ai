@@ -1,4 +1,5 @@
 """HTTP API, WebSocket, and thin HTML handlers."""
+# [2026-04-28] rotation/start 설명을 서울 유입 핵심 CCTV 로테이션 기준으로 갱신.
 
 from __future__ import annotations
 
@@ -21,7 +22,7 @@ router = APIRouter()
 
 @router.get("/preview-sites")
 def preview_sites():
-    """하단 미리보기 드롭다운용: 로테이션과 동일한 5지점 이름·스트림 URL."""
+    """하단 미리보기 드롭다운용: 로테이션과 동일한 지점 이름·스트림 URL."""
     sites = rotation_sites_configured()
     try:
         from app.config import CCTV_URL as _def
@@ -43,8 +44,23 @@ def favicon():
 
 
 @router.get("/cctv-list")
-def cctv_list():
-    return get_cctv_list()
+def cctv_list(
+    minX: float | None = Query(None),
+    maxX: float | None = Query(None),
+    minY: float | None = Query(None),
+    maxY: float | None = Query(None),
+    cctv_type: str | None = Query(None, alias="cctvType"),
+    road_type: str | None = Query(None, alias="type"),
+):
+    params = {
+        "minX": minX,
+        "maxX": maxX,
+        "minY": minY,
+        "maxY": maxY,
+        "cctvType": cctv_type,
+        "type": road_type,
+    }
+    return get_cctv_list(params)
 
 
 @router.get("/count-status")
@@ -53,6 +69,46 @@ def get_count_status():
         return {
             "cctv_name": st.count_status["cctv_name"],
             "count": st.count_status["count"],
+            "up_count": st.count_status.get(
+                "up_count",
+                st.detection_status.get("up_count", 0),
+            ),
+            "down_count": st.count_status.get(
+                "down_count",
+                st.detection_status.get("down_count", 0),
+            ),
+            "main_flow_count": st.count_status.get(
+                "main_flow_count",
+                st.detection_status.get("main_flow_count", 0),
+            ),
+            "direction_score": st.count_status.get(
+                "direction_score",
+                st.detection_status.get("direction_score", 0.0),
+            ),
+            "flow_per_sec": st.count_status.get(
+                "flow_per_sec",
+                st.detection_status.get("flow_per_sec", 0.0),
+            ),
+            "duration_sec": st.count_status.get(
+                "duration_sec",
+                st.detection_status.get("duration_sec", 0.0),
+            ),
+            "time_bucket": st.count_status.get(
+                "time_bucket",
+                st.detection_status.get("time_bucket", ""),
+            ),
+            "bucket_lag_sec": st.count_status.get(
+                "bucket_lag_sec",
+                st.detection_status.get("bucket_lag_sec", 0.0),
+            ),
+            "is_valid": st.count_status.get(
+                "is_valid",
+                st.detection_status.get("is_valid", True),
+            ),
+            "invalid_reason": st.count_status.get(
+                "invalid_reason",
+                st.detection_status.get("invalid_reason", ""),
+            ),
             "logs": list(st.count_status["logs"]),
         }
 
@@ -79,8 +135,28 @@ def start_count(request: Request, id: int = Query(..., ge=0)):
     with st.status_lock:
         st.count_status["cctv_name"] = cctv_name
         st.count_status["count"] = 0
+        st.count_status["up_count"] = 0
+        st.count_status["down_count"] = 0
+        st.count_status["main_flow_count"] = 0
+        st.count_status["direction_score"] = 0.0
+        st.count_status["duration_sec"] = 0.0
+        st.count_status["flow_per_sec"] = 0.0
+        st.count_status["time_bucket"] = ""
+        st.count_status["bucket_lag_sec"] = 0.0
+        st.count_status["is_valid"] = True
+        st.count_status["invalid_reason"] = ""
         st.count_status["logs"] = []
         st.detection_status["count"] = 0
+        st.detection_status["up_count"] = 0
+        st.detection_status["down_count"] = 0
+        st.detection_status["main_flow_count"] = 0
+        st.detection_status["direction_score"] = 0.0
+        st.detection_status["duration_sec"] = 0.0
+        st.detection_status["flow_per_sec"] = 0.0
+        st.detection_status["time_bucket"] = ""
+        st.detection_status["bucket_lag_sec"] = 0.0
+        st.detection_status["is_valid"] = True
+        st.detection_status["invalid_reason"] = ""
         st.detection_status["boxes"] = []
         st.detection_status["timestamp"] = ""
 
@@ -88,6 +164,12 @@ def start_count(request: Request, id: int = Query(..., ge=0)):
         with st.status_lock:
             if evt.get("type") == "count":
                 st.count_status["count"] = int(evt.get("count", st.count_status["count"]))
+                st.count_status["up_count"] = int(
+                    evt.get("up_count", st.count_status.get("up_count", 0)),
+                )
+                st.count_status["down_count"] = int(
+                    evt.get("down_count", st.count_status.get("down_count", 0)),
+                )
                 direction = str(evt.get("direction", "")).lower()
                 direction_kr = "하행" if direction == "down" else "상행" if direction == "up" else "-"
                 st.count_status["logs"].append(
@@ -151,8 +233,22 @@ def stop_count():
     with st.status_lock:
         ts = datetime.now().isoformat(timespec="seconds")
         st.count_status["logs"].append(f"[{ts}] 카운터 정지 (수동)")
+        st.count_status["count"] = 0
+        st.count_status["up_count"] = 0
+        st.count_status["down_count"] = 0
+        st.count_status["main_flow_count"] = 0
+        st.count_status["direction_score"] = 0.0
+        st.count_status["duration_sec"] = 0.0
+        st.count_status["flow_per_sec"] = 0.0
+        st.count_status["time_bucket"] = ""
+        st.count_status["bucket_lag_sec"] = 0.0
+        st.count_status["is_valid"] = True
+        st.count_status["invalid_reason"] = ""
         if len(st.count_status["logs"]) > 50:
             st.count_status["logs"] = st.count_status["logs"][-50:]
+        st.detection_status["count"] = 0
+        st.detection_status["up_count"] = 0
+        st.detection_status["down_count"] = 0
         st.detection_status["boxes"] = []
 
     return {"ok": True, "message": "counter stopped"}
@@ -160,7 +256,7 @@ def stop_count():
 
 @router.post("/rotation/start")
 def rotation_start(request: Request):
-    """5지점(판교→하남→서창→김포→광명) 순차 캡처 시작. URL은 환경변수로 설정."""
+    """서울 유입 핵심 CCTV 순차 캡처 시작. URL은 환경변수 또는 ITS API에서 조회."""
     res = rotation_start_impl(request.app)
     if res.get("ok"):
         return res
@@ -172,7 +268,7 @@ def rotation_start(request: Request):
             status_code=400,
             detail=(
                 "유효한 스트림 URL이 없습니다. .env 에 CCTV_URL 또는 지점별 URL을 넣거나, "
-                "ITS API(네트워크)로 5지점 자동 조회가 되도록 서버에서 openapi.its.go.kr 접근을 확인하세요."
+                "ITS API(네트워크)로 로테이션 지점 자동 조회가 되도록 서버에서 openapi.its.go.kr 접근을 확인하세요."
             ),
         )
     raise HTTPException(status_code=500, detail=str(res))
@@ -180,7 +276,7 @@ def rotation_start(request: Request):
 
 @router.post("/rotation/stop")
 def rotation_stop():
-    """5지점 순차 캡처 정지."""
+    """서울 유입 핵심 CCTV 순차 캡처 정지."""
     
     with st.sequencer_lock:
         st.sequencer_stop.set()
@@ -203,7 +299,7 @@ def rotation_stop():
 
     with st.status_lock:
         ts = datetime.now().isoformat(timespec="seconds")
-        st.count_status["logs"].append(f"[{ts}] 5지점 로테이션 정지")
+        st.count_status["logs"].append(f"[{ts}] 서울 유입 CCTV 로테이션 정지")
         if len(st.count_status["logs"]) > 50:
             st.count_status["logs"] = st.count_status["logs"][-50:]
         st.detection_status["boxes"] = []

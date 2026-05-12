@@ -8,7 +8,7 @@ Repository: [github.com/StargazyP/traffic-ai](https://github.com/StargazyP/traff
 
 ## Expected outcomes
 
-- **Multi-site operation**: Rotate across several road segments (e.g. Pangyo, Hanam, Seochang, Gimpo, Gwangmyeong) with one shared GPU and a single YOLO worker thread.
+- **Multi-site operation**: Rotate across Seoul inbound CCTV sites with one shared GPU and a single YOLO worker thread.
 - **Efficient telemetry**: Avoid streaming full frames over WebSocket; send bounding boxes, counts, and optional ROI debug snapshots (JPEG base64) only.
 - **Operational flexibility**: Resolve stream URLs via the ITS OpenAPI or pin per-site URLs through environment configuration.
 - **Stable browser playback**: Mitigate Referer/cookie issues for KT/ITS-style HLS using the built-in **`/hls` proxy**.
@@ -66,7 +66,7 @@ flowchart TB
 | `app/main.py` | FastAPI app, rotation and YOLO workers, WebSocket, minimal HTML dashboard |
 | `app/config.py` | Loads `.env` via `python-dotenv`; CCTV, YOLO, and HLS proxy settings |
 | `app/hls_proxy.py` | `/hls/register`, `/hls/play/{tid}` — m3u8 rewrite and Referer fallback |
-| `app/its_client.py` / `app/its_rotation.py` | ITS API listing and pattern matching for the five rotation sites |
+| `app/its_client.py` / `app/its_rotation.py` | ITS API listing and pattern matching for the Seoul inbound rotation sites |
 | `yolo_mysql_counter.py` | Single-CCTV counter paths (`run_counter_stream`, etc.) and FFmpeg piping |
 | `db_mysql.py` | MySQL connectivity and hybrid-column-aware batch insert |
 | `event_bus.py` | WebSocket fan-out |
