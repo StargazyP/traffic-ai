@@ -9,6 +9,8 @@
 
 ## 2) 전체 구조(요약)
 
+![traffic-ai architecture](docs/architecture.svg)
+
 ```text
 [Browser]
   ├─ GET /                -> 기본 대시보드(UI + JS)
@@ -17,9 +19,11 @@
   └─ GET /hls/play/{tid}  -> HLS 프록시 스트림 재생
 
 [FastAPI app.main]
+  ├─ Routes + UI (app.main / app.routes)
+  ├─ Env-driven config (.env, no embedded service keys)
   ├─ Rotation Orchestrator (thread)
   │   ├─ ffmpeg ingest threads (CCTV별 혹은 단일 ingest 공유)
-  │   └─ YOLO track + line crossing count
+  │   └─ YOLO track + ROI/line crossing count
   ├─ Single counter mode (thread)
   │   └─ yolo_mysql_counter.run_counter_stream
   ├─ EventBus (WS broadcast)
@@ -27,7 +31,7 @@
   └─ HLS Proxy router (/hls/*)
 
 [Persistence]
-  └─ MySQL (vehicle_count 테이블, 배치 insert)
+  └─ MySQL (vehicle_count, vehicle_count_hourly, 배치 insert/롤업)
 ```
 
 ---
@@ -64,6 +68,7 @@
 - `insert_batch(rows)`는 스키마 유연성을 가진다.
   - `up_count/down_count` 컬럼이 있으면 분리 저장
   - 없으면 `count=up+down`으로 fallback 저장
+- `vehicle_count_hourly` 시간 단위 롤업과 원본 보존 정책을 백그라운드 루프로 실행한다.
 
 ### `event_bus.py` (실시간 전달)
 - 연결된 WebSocket 클라이언트 리스트를 유지하고 `broadcast()` 수행.
@@ -86,6 +91,7 @@
   - 추론 성능(`FRAME_SKIP`, `YOLO_TRACK_CONF`, `LINE_Y_RATIO`)
   - 로테이션 주기(`CCTV_ROTATION_SEC`)
   - HLS 프록시 헤더/허용 호스트
+- 서울 유입 로테이션 지점별 ROI/가상선 튜닝(`CAMERA_CONFIG`)을 제공한다.
 
 ---
 
@@ -98,8 +104,9 @@
 4. 현재 로테이션 지점 프레임에 대해 YOLO 추론/추적 수행
 5. 가상선 교차 시 up/down 및 global count 갱신
 6. 배치 버퍼에 저장 요청 누적 후 MySQL insert
-7. `/ws`로 `{type: "segment"}` 또는 `{type: "detection"}` 전송
-8. 프론트가 카운트/지점/로그를 실시간 반영
+7. 시간 단위 롤업 루프가 `vehicle_count_hourly`에 장기 집계 저장
+8. `/ws`로 `{type: "segment"}` 또는 `{type: "detection"}` 전송
+9. 프론트가 카운트/지점/로그를 실시간 반영
 
 ### B. 단일 카운터 모드
 1. `/start-count?id=...` 호출
@@ -119,6 +126,9 @@
 
 ### 추론/카운트 파이프라인
 `CCTV URL` -> `ffmpeg raw frame` -> `YOLO track(ByteTrack)` -> `track_id별 y 이력` -> `line crossing 판단` -> `up/down/global count 갱신` -> `DB batch insert` + `WS detection 이벤트`
+
+### 저장 파이프라인
+`vehicle_count` 원본 이벤트 -> `vehicle_count_hourly` 시간 단위 롤업 -> `DB_RAW_RETENTION_HOURS` 기준 원본 보존/삭제
 
 ### 프론트 동기화
 - polling:
@@ -154,10 +164,19 @@
   - `HLS_PROXY_REFERER`, `HLS_PROXY_ORIGIN`, `HLS_PROXY_ALLOWED_HOSTS`
 - DB
   - `MYSQL_HOST`, `MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_DATABASE`
+- 롤업/보존
+  - `DB_HOURLY_COMPRESSION_ENABLED`, `DB_HOURLY_COMPRESSION_INTERVAL_SEC`, `DB_RAW_RETENTION_HOURS`
 
 ---
 
-## 8) 배포/런타임
+## 8) 공개 저장소 보안 기준
+- `ITS_API_KEY`와 실제 CCTV URL, 운영 DB 비밀번호는 코드에 두지 않고 `.env` 또는 배포 환경변수로 주입한다.
+- `.env`, 모델 가중치(`*.pt`, `models/`), 로그, 캡처 이미지/영상, 로컬 DB 파일은 Git과 Docker build context에서 제외한다.
+- `docker-compose.yml`의 기본 DB 비밀번호는 로컬 개발용이며, 운영 배포에서는 반드시 환경변수로 교체한다.
+
+---
+
+## 9) 배포/런타임
 - 컨테이너: `Dockerfile`
   - 베이스 `python:3.11-slim`
   - 필수 런타임 `ffmpeg` 설치
@@ -167,13 +186,14 @@
 
 ---
 
-## 9) 현재 구조의 장점과 주의점
+## 10) 현재 구조의 장점과 주의점
 
 ### 장점
 - 영상 전송과 추론 이벤트를 분리하여 브라우저 부담이 낮다.
 - 로테이션/단일 카운터 두 모드를 모두 지원한다.
 - HLS 프록시가 있어 실제 CCTV CDN 제약(403/Referer)에 대응 가능하다.
 - DB 스키마 호환(fallback)으로 운영 전환 부담이 낮다.
+- 시간 단위 롤업으로 장시간 실행 시 원본 테이블 증가를 완화할 수 있다.
 
 ### 주의점
 - 모델 로드 경로가 이원화되어 있음:
@@ -184,7 +204,7 @@
 
 ---
 
-## 10) 빠른 코드 진입 순서(읽기 추천)
+## 11) 빠른 코드 진입 순서(읽기 추천)
 1. `app/main.py` : 전체 제어 흐름
 2. `yolo_mysql_counter.py` : 실제 추론/카운트 로직
 3. `app/config.py` : 런타임 설정/환경변수

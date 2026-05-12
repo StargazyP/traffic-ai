@@ -1,0 +1,114 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="760" viewBox="0 0 1180 760" role="img" aria-labelledby="title desc">
+  <title id="title">traffic-ai architecture</title>
+  <desc id="desc">FastAPI service pipeline for Seoul inbound CCTV rotation, YOLO inference, WebSocket telemetry, HLS proxy, and MySQL persistence.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#334155"/>
+    </marker>
+    <style>
+      .bg { fill: #f8fafc; }
+      .group { fill: #ffffff; stroke: #cbd5e1; stroke-width: 1.5; rx: 18; }
+      .box { fill: #eff6ff; stroke: #2563eb; stroke-width: 1.4; rx: 12; }
+      .box-green { fill: #ecfdf5; stroke: #059669; }
+      .box-amber { fill: #fffbeb; stroke: #d97706; }
+      .box-purple { fill: #f5f3ff; stroke: #7c3aed; }
+      .box-red { fill: #fef2f2; stroke: #dc2626; }
+      .title { fill: #0f172a; font-family: Arial, sans-serif; font-size: 28px; font-weight: 700; }
+      .subtitle { fill: #475569; font-family: Arial, sans-serif; font-size: 14px; }
+      .label { fill: #0f172a; font-family: Arial, sans-serif; font-size: 15px; font-weight: 700; }
+      .small { fill: #334155; font-family: Arial, sans-serif; font-size: 12px; }
+      .group-label { fill: #1e293b; font-family: Arial, sans-serif; font-size: 16px; font-weight: 700; }
+      .flow { stroke: #334155; stroke-width: 1.8; fill: none; marker-end: url(#arrow); }
+      .flow-dash { stroke: #64748b; stroke-width: 1.6; fill: none; stroke-dasharray: 6 5; marker-end: url(#arrow); }
+      .note { fill: #475569; font-family: Arial, sans-serif; font-size: 11px; }
+    </style>
+  </defs>
+
+  <rect class="bg" width="1180" height="760"/>
+  <text x="40" y="48" class="title">traffic-ai Architecture</text>
+  <text x="40" y="74" class="subtitle">Seoul inbound CCTV rotation, YOLOv8 + ByteTrack inference, metadata-only delivery, and MySQL rollups</text>
+
+  <rect x="40" y="105" width="220" height="500" class="group"/>
+  <text x="62" y="135" class="group-label">Clients</text>
+  <rect x="65" y="160" width="170" height="74" class="box"/>
+  <text x="86" y="191" class="label">Browser UI</text>
+  <text x="86" y="212" class="small">dashboard / preview</text>
+  <rect x="65" y="265" width="170" height="86" class="box"/>
+  <text x="88" y="296" class="label">WebSocket</text>
+  <text x="83" y="317" class="small">detection + segment</text>
+  <text x="94" y="337" class="small">metadata only</text>
+  <rect x="65" y="385" width="170" height="84" class="box"/>
+  <text x="92" y="416" class="label">HLS Player</text>
+  <text x="83" y="437" class="small">/hls/play/{tid}</text>
+
+  <rect x="300" y="105" width="570" height="560" class="group"/>
+  <text x="322" y="135" class="group-label">FastAPI Application</text>
+  <rect x="330" y="160" width="195" height="82" class="box-green"/>
+  <text x="360" y="190" class="label">Routes + UI</text>
+  <text x="352" y="212" class="small">app.main / app.routes</text>
+  <rect x="615" y="160" width="215" height="82" class="box-amber"/>
+  <text x="654" y="190" class="label">Configuration</text>
+  <text x="643" y="212" class="small">.env, no embedded keys</text>
+
+  <rect x="330" y="285" width="205" height="86" class="box-purple"/>
+  <text x="360" y="316" class="label">Rotation Service</text>
+  <text x="354" y="337" class="small">Seoul inbound sites</text>
+  <text x="364" y="356" class="small">sequencer thread</text>
+  <rect x="625" y="285" width="205" height="86" class="box-purple"/>
+  <text x="654" y="316" class="label">FFmpeg Ingest</text>
+  <text x="649" y="337" class="small">raw BGR frame queues</text>
+
+  <rect x="330" y="415" width="205" height="96" class="box-red"/>
+  <text x="365" y="446" class="label">YOLO Worker</text>
+  <text x="354" y="467" class="small">YOLOv8 + ByteTrack</text>
+  <text x="362" y="486" class="small">ROI + line crossing</text>
+  <rect x="625" y="415" width="205" height="96" class="box-green"/>
+  <text x="660" y="446" class="label">Event Bus</text>
+  <text x="655" y="467" class="small">WebSocket broadcast</text>
+  <text x="662" y="486" class="small">no video payload</text>
+
+  <rect x="330" y="550" width="205" height="76" class="box-green"/>
+  <text x="363" y="581" class="label">HLS Proxy</text>
+  <text x="355" y="602" class="small">m3u8 rewrite + headers</text>
+  <rect x="625" y="550" width="205" height="76" class="box-amber"/>
+  <text x="670" y="581" class="label">DB Layer</text>
+  <text x="647" y="602" class="small">batch insert + hourly rollup</text>
+
+  <rect x="910" y="105" width="230" height="500" class="group"/>
+  <text x="932" y="135" class="group-label">External Systems</text>
+  <rect x="940" y="160" width="170" height="82" class="box-amber"/>
+  <text x="973" y="190" class="label">ITS OpenAPI</text>
+  <text x="960" y="212" class="small">cctvInfo + URLs</text>
+  <rect x="940" y="285" width="170" height="86" class="box"/>
+  <text x="974" y="316" class="label">CCTV CDN</text>
+  <text x="970" y="337" class="small">HLS / RTSP source</text>
+  <rect x="940" y="415" width="170" height="96" class="box-green"/>
+  <text x="994" y="446" class="label">MySQL</text>
+  <text x="964" y="467" class="small">vehicle_count</text>
+  <text x="952" y="486" class="small">vehicle_count_hourly</text>
+
+  <path class="flow" d="M235 197 C275 197, 285 197, 330 197"/>
+  <path class="flow" d="M525 201 C560 201, 580 201, 615 201"/>
+  <path class="flow-dash" d="M830 201 C875 201, 895 201, 940 201"/>
+  <path class="flow" d="M535 328 C565 328, 590 328, 625 328"/>
+  <path class="flow" d="M727 371 L727 415"/>
+  <path class="flow" d="M625 463 C590 463, 570 463, 535 463"/>
+  <path class="flow" d="M535 463 C570 463, 590 463, 625 463"/>
+  <path class="flow" d="M625 463 C500 700, 255 310, 235 310"/>
+  <path class="flow" d="M235 427 C275 427, 290 588, 330 588"/>
+  <path class="flow-dash" d="M535 588 C725 690, 860 328, 940 328"/>
+  <path class="flow" d="M830 588 C870 588, 900 463, 940 463"/>
+  <path class="flow-dash" d="M940 328 C895 328, 875 328, 830 328"/>
+
+  <text x="276" y="185" class="note">HTTP routes</text>
+  <text x="856" y="185" class="note">requires ITS_API_KEY</text>
+  <text x="550" y="316" class="note">site switch</text>
+  <text x="566" y="450" class="note">frames</text>
+  <text x="565" y="480" class="note">events</text>
+  <text x="245" y="335" class="note">WS JSON</text>
+  <text x="240" y="454" class="note">proxied HLS</text>
+  <text x="856" y="610" class="note">counts + rollups</text>
+
+  <rect x="40" y="690" width="1100" height="42" fill="#e2e8f0" rx="12"/>
+  <text x="64" y="716" class="small">Security boundary: .env, model weights, logs, captures, local DB files, and videos are ignored. API keys and production passwords are supplied by environment variables.</text>
+</svg>
