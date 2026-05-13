@@ -1,0 +1,69 @@
+name: traffic-ai
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: traffic-ai-app:local
+    container_name: traffic-ai-app
+    working_dir: /workspace
+    restart: unless-stopped
+
+    volumes:
+      - ./:/workspace
+
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_USER: root
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-traffic_dev_password}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-traffic}
+
+      PYTHONWARNINGS: ignore
+      GLOG_minloglevel: "2"
+      PYTORCH_DISABLE_NNPACK: "1"
+      TORCH_CPP_LOG_LEVEL: ERROR
+
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+    ports:
+      - "8000:8000"
+
+    command:
+      - python
+      - -m
+      - uvicorn
+      - app.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+
+  mysql:
+    image: mysql:8.0
+    container_name: traffic-ai-mysql
+    restart: unless-stopped
+
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_PASSWORD:-traffic_dev_password}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-traffic}
+
+    # ❌ 외부 포트 제거 (핵심)
+    # ports:
+    #   - "3306:3306"
+
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$${MYSQL_ROOT_PASSWORD}\""]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 20s
+
+volumes:
+  mysql_data:

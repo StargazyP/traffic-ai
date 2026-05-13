@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+websockets>=12
+python-dotenv
+ultralytics
+lap
+Pillow>=10.0
+numpy
+jinja2
+requests
+mysql-connector-python
