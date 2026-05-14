@@ -1,5 +1,5 @@
 # Demo
-[GitHub Demo Link](http://jangdonggun.iptime.org:8000/)
+[GitHub Demo Link](https://jangdonggun.duckdns.org/traffic/)
 # traffic-ai
 
 A **FastAPI** service that ingests **CCTV HLS/RTSP streams** (e.g. from the national ITS center), tracks vehicles with **YOLOv8 + ByteTrack**, aggregates **up/down traffic** using a **hybrid rule set** (virtual line crossing “hard” counts plus flow-based “soft” correction), batch-writes results to **MySQL**, and pushes **metadata only** to dashboards over **WebSocket** (no raw video on the wire).
