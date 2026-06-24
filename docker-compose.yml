@@ -14,10 +14,22 @@ services:
       - ./:/workspace
 
     environment:
-      MYSQL_HOST: mysql
+      # portfolio_gateway 네트워크와 병행 시 DNS 이름 `mysql`이 portfolio-mysql 로 잡힐 수 있어 컨테이너 이름으로 고정
+      MYSQL_HOST: traffic-ai-mysql
       MYSQL_USER: root
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-traffic_dev_password}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-changeme}
       MYSQL_DATABASE: ${MYSQL_DATABASE:-traffic}
+
+      # GPU YOLO (GTX 1650 4GB: 워커 2 + YOLO_IMGSZ 960 권장)
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility,video
+      YOLO_WORKER_COUNT: ${YOLO_WORKER_COUNT:-2}
+      USE_CUDA: ${USE_CUDA:-true}
+
+      # 시간 롤업: 한국 기준 매 시(12시·13시…) 버킷 + 정각에 재실행
+      DB_ROLLUP_TIMEZONE: "+09:00"
+      DB_ROLLUP_CLOCK_TZ: "Asia/Seoul"
+      DB_HOURLY_ALIGN_TO_CLOCK: "1"
 
       PYTHONWARNINGS: ignore
       GLOG_minloglevel: "2"
@@ -31,6 +43,12 @@ services:
     ports:
       - "8000:8000"
 
+    networks:
+      - default
+      - portfolio_gateway
+
+    runtime: nvidia
+
     command:
       - python
       - -m
@@ -41,13 +59,43 @@ services:
       - --port
       - "8000"
 
+  traffic-data-api:
+    build:
+      context: ./traffic_data_api
+      dockerfile: Dockerfile
+    image: traffic-data-api:local
+    container_name: traffic-data-api
+    restart: unless-stopped
+    environment:
+      MYSQL_HOST: traffic-ai-mysql
+      MYSQL_USER: root
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-changeme}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-traffic}
+    depends_on:
+      mysql:
+        condition: service_healthy
+    ports:
+      - "8001:8001"
+    networks:
+      - default
+      - portfolio_gateway
+    command:
+      - uvicorn
+      - main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8001"
+      - --root-path
+      - /traffic-api
+
   mysql:
     image: mysql:8.0
     container_name: traffic-ai-mysql
     restart: unless-stopped
 
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_PASSWORD:-traffic_dev_password}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_PASSWORD:-changeme}
       MYSQL_DATABASE: ${MYSQL_DATABASE:-traffic}
 
     # ❌ 외부 포트 제거 (핵심)
@@ -67,3 +115,8 @@ services:
 
 volumes:
   mysql_data:
+
+networks:
+  portfolio_gateway:
+    external: true
+    name: portfolio_portfolio_net

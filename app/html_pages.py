@@ -15,8 +15,10 @@ def traffic_live_html() -> str:
   <h2>실시간 차량 카운트 (WebSocket)</h2>
   <div id="data"></div>
   <script>
+    const PATH_TRAFFIC = location.pathname.match(/^(\/traffic)(?=\\/|$)/);
+    const TRAFFIC_BASE = PATH_TRAFFIC ? PATH_TRAFFIC[1] : "";
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    const ws = new WebSocket(proto + "//" + location.host + "/ws");
+    const ws = new WebSocket(proto + "//" + location.host + TRAFFIC_BASE + "/ws");
     ws.onopen = () => {
       setInterval(() => {
         try {
@@ -47,378 +49,937 @@ def traffic_live_html() -> str:
 
 def index_html() -> str:
     return """
-    <html>
-    <head><title>Traffic AI — 서울 유입 CCTV 로테이션</title></head>
-    <body>
-      <h2>서울 유입 CCTV 순차 캡처 (YOLO)</h2>
-      <p style="color:#555;max-width:720px;">
-        상단 영상은 <strong>하단에서 지점 선택 후 [보기]</strong>로 재생합니다. KT/ITS m3u8은 동일 출처 <code>/hls</code> 프록시를 거칩니다. YOLO·카운트는 서버 OpenCV·<code>WebSocket</code>과 별개입니다.
-      </p>
-      <details style="max-width:920px;margin:12px 0 20px;padding:14px 16px;border:1px solid #ccc;border-radius:8px;background:#f8f9fa;">
-        <summary style="cursor:pointer;font-weight:600;color:#222;">서버 캡처·YOLO 파이프라인 (현재 아키텍처 상세)</summary>
-        <div style="margin-top:14px;font-size:13px;line-height:1.65;color:#333;max-width:900px;">
-          <p><strong>1) 로테이션 시작 시</strong><br/>
-          지점 목록(<code>get_effective_rotation_sites</code>)마다 <strong>FFmpeg 전용 스레드</strong>를 띄웁니다. CCTV별 <code>frame_queues</code>·<code>trackers</code>(YOLO 인스턴스)는 세션마다 비운 뒤 다시 채워집니다. 별도 <strong>시퀀서 스레드</strong>는 <code>CCTV_ROTATION_SEC</code>마다 현재 지점만 바며 <code>type: segment</code> WebSocket만 보냅니다(브라우저 HLS 미리보기와 무관).</p>
-          <p><strong>2) FFmpeg 인입 (지점당 1스레드)</strong><br/>
-          HLS/RTSP URL을 읽어 <code>rawvideo bgr24</code>로 디코드합니다. 필터: <code>fps=5,scale=FRAME_WIDTH×FRAME_HEIGHT</code>(<code>app.config</code>). 끊기면 지수 백오프 후 프로세스 재시작합니다.</p>
-          <p><strong>3) CCTV별 프레임 큐 (짧은 버퍼)</strong><br/>
-          각 지점 이름으로 <code>Queue(maxsize=YOLO_FRAME_QUEUE_SIZE)</code>(기본 5)를 두고, 디코드된 프레임·캡처 시각 <code>ts</code>·CCTV명을 넣습니다. 큐가 가득 차면 가장 오래된 프레임을 제거해 최신 프레임을 유지합니다.</p>
-          <p><strong>4) 단일 <code>yolo_worker</code> 스레드 (GPU 1개 공유)</strong><br/>
-          • <code>frame_queues</code> 키 목록은 리비전이 바뀔 때만 갱신합니다.<br/>
-          • 큐에 프레임이 있는 CCTV만 <code>ready_cctvs</code>로 모읍니다. 비어 있으면 짧게 sleep합니다.<br/>
-          • <code>YOLO_SAMPLE_INTERVAL</code>이 지난 CCTV만 <code>eligible</code>로 남깁니다(지점별 샘플링, 빈 <code>get(timeout)</code> 낭비 감소).<br/>
-          • 라운드로빈으로 한 지점을 고른 뒤 큐에서 프레임 1개를 꺼내 순차 처리합니다(중간 프레임 보존).<br/>
-          • <code>YOLO_FRAME_MAX_AGE_SEC</code>보다 오래된 <code>ts</code>면 추론을 건너뜁니다.</p>
-          <p><strong>5) ROI → YOLO 추론</strong><br/>
-          전체 프레임 높이 <code>h</code>에서 <code>roi_y0 = int(h × YOLO_ROI_TOP_RATIO)</code>를 기본으로 사용합니다. 가상선은 <code>line_y_global - roi_y0</code>로 ROI 좌표계에 맞춰 계산합니다.</p>
-          <p><strong>6) YOLO detect + CCTV별 ByteTrack</strong><br/>
-          YOLO는 전역 단일 모델(<code>model = YOLO(MODEL_PATH)</code>)로 detect만 수행하고, 지점별 상태는 <code>get_tracker(cctv_name)</code>의 ByteTrack 인스턴스가 유지합니다. 검출 결과(<code>xyxy/conf/cls</code>)를 트래커 입력으로 변환해 <code>tracker.update(...)</code>를 호출하며, 트랙 id는 ByteTrack이 생성합니다. <code>imgsz</code>는 <code>YOLO_IMGSZ</code>(기본 960)를 사용합니다.</p>
-          <p><strong>7) 검출/트랙 처리</strong><br/>
-          <code>boxes_obj</code>가 없거나 <code>xyxy</code>가 없으면 빈 검출로 트래커를 업데이트해 상태를 유지합니다. 검출이 있으면 차량 클래스(<code>vehicle_classes</code>)만 필터링해 ByteTrack 결과를 기준으로 카운트 루프를 진행합니다.</p>
-          <p><strong>8) 카운트 규칙 (하이브리드: Line-cross + Flow)</strong><br/>
-          트랙별로 <code>(infer_seq, bbox 하단 y)</code> 시계열을 최대 30개 유지합니다. <strong>Primary(hard)</strong>: 이전·현재 하단이 ROI 기준 가상선(<code>LINE_Y_RATIO</code>)을 교차하고 <code>|dy|≥MIN_MOVE</code>이면 상행/하행 hard로 집계합니다. <strong>Secondary(soft)</strong>: 연속 프레임에서 가상선 교차가 없어도, <code>|dy|≥FLOW_SOFT_MIN_DY</code>·가상선 근접(<code>LINE_SOFT_MARGIN</code>)·(3프레임 이상일 때) 방향 반전 없음이면 soft로 집계합니다(<code>HYBRID_SOFT_ENABLE</code>). 동일 <code>track_id</code>는 한 번 카운트되면 stale까지 재사용하지 않습니다. DB에는 <code>up_count_hard/down_count_hard/up_count_soft/down_count_soft</code> 및 합계 <code>up_count/down_count</code>가 저장됩니다.</p>
-          <p><strong>9) WebSocket <code>type: detection</code></strong><br/>
-          카운트·박스·프레임 메타·타임스탬프를 보냅니다. <code>DEBUG_IMAGE=1</code>이면 N회마다(<code>DEBUG_IMAGE_EVERY</code>) YOLO 입력 <code>roi</code>에 박스를 그린 JPEG를 base64로 넣습니다(전체 원본 프레임은 미포함).</p>
-          <p style="font-size:12px;color:#666;margin-bottom:0;">주요 환경변수 예: <code>YOLO_FRAME_QUEUE_SIZE</code>, <code>HYBRID_SOFT_ENABLE</code>, <code>FLOW_SOFT_MIN_DY</code>, <code>LINE_SOFT_MARGIN</code>, <code>LINE_Y_RATIO</code>, <code>MIN_MOVE</code>, <code>YOLO_STALE_INFER_GAP</code>, <code>YOLO_SAMPLE_INTERVAL</code>, <code>YOLO_FRAME_MAX_AGE_SEC</code>, <code>YOLO_ROI_TOP_RATIO</code>, <code>YOLO_ROI_TOP_RATIO_HANAM</code>, <code>YOLO_IMGSZ</code>, <code>YOLO_IMGSZ_HANAM</code>, <code>FRAME_WIDTH</code>/<code>FRAME_HEIGHT</code>, <code>DEBUG_IMAGE</code>, <code>DEBUG_IMAGE_EVERY</code>, <code>MODEL_PATH</code>, <code>CCTV_ROTATION_SEC</code>.</p>
-        </div>
-      </details>
-      <button type="button" id="btnStart" onclick="startRotation()">시작</button>
-      <button type="button" id="btnStop" onclick="stopRotation()" disabled>정지</button>
-      <span id="runStatus" style="margin-left:12px;color:#444;">대기 중</span>
-      <br><br>
-      <div style="margin-top:8px;">
-        <div style="font-size:12px;color:#666;margin-bottom:6px;">
-          YOLO 디버그: 모델 입력 roi 크롭 + 박스. <code>DEBUG_IMAGE=1</code>
-        </div>
-        <div id="debugGrid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:8px;max-width:1360px;"></div>
-      </div>
-      <pre id="yoloTelemetry" style="font-size:12px;color:#444;max-width:720px;white-space:pre-wrap;border-left:3px solid #ccc;padding-left:8px;">서버 YOLO: 로테이션 시작 후 여기에 추론 여부가 표시됩니다 (브라우저 영상과 무관).</pre>
-      <h3>
-        실시간 카운트:
-        총 <span id="countValue">0</span>
-        (상행 <span id="upCountValue">0</span> / 하행 <span id="downCountValue">0</span>)
-        <small id="currentCctv" style="color:#666;"></small>
-      </h3>
-      <div id="debugBox" style="
-        position:fixed;
-        right:10px;
-        bottom:10px;
-        background:rgba(0,0,0,0.7);
-        color:#0f0;
-        padding:10px;
-        font-size:12px;
-        font-family:monospace;
-        z-index:9999;
-      ">YOLO: 대기중</div>
-      <div>
-        <h4>저장 로그</h4>
-        <pre id="logBox" style="height:220px; overflow:auto; border:1px solid #ccc; padding:8px;"></pre>
-      </div>
-      <script>
-        const DEFAULT_DEBUG_CCTVS = [
-          "수원신갈IC",
-          "판교분기점",
-          "서울TG",
-          "용인IC",
-          "신갈분기점",
-          "서평택분기점",
-          "비봉IC",
-          "매송나들목",
-          "장항IC",
-          "자유로분기점",
-          "일산IC",
-          "양주IC",
-          "의정부IC",
-          "동의정부IC북측",
-          "남구리IC",
-          "구리IC",
-          "중랑IC교",
-        ];
-        let debugCctvs = DEFAULT_DEBUG_CCTVS.slice();
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>고속도로 디버깅 — Traffic AI</title>
+  <style>
+    .rotation-chip { display:inline-block; margin:3px 4px 3px 0; padding:3px 8px; border-radius:999px; font-size:11px; border:1px solid #ced4da; background:#fff; color:#495057; }
+    .rotation-chip--infer { border-color:#0969da; background:#ddf4ff; color:#0550ae; }
+  </style>
+</head>
+<body style="font-family:system-ui,sans-serif;margin:16px;">
+  <h2 style="margin-bottom:8px;">고속도로 실시간 디버깅</h2>
+  <p style="margin:0 0 12px;font-size:13px;"><a id="tuningLink" href="/traffic/tuning/roi">CCTV별 ROI · Line Crossing 튜닝</a></p>
 
-        function buildDebugCards() {
-          const grid = document.getElementById("debugGrid");
-          if (!grid) return;
-          grid.innerHTML = "";
-          for (const cctv of debugCctvs) {
-            const card = document.createElement("div");
-            card.className = "dbg-card";
-            card.setAttribute("data-cctv", cctv);
-            card.style.cssText = "border:1px solid #ccc;padding:6px;background:#f9f9f9;";
-            card.innerHTML = `
-              <div style="font-size:12px;font-weight:600;margin-bottom:4px;">${cctv}</div>
-              <img id="debugImage-${cctv}" alt="debug ${cctv}" style="width:100%;border:1px solid #ddd;background:#111;min-height:110px;" />
-              <div id="debugMeta-${cctv}" style="font-size:11px;color:#555;margin-top:4px;">대기중</div>
-            `;
-            grid.appendChild(card);
+  <section id="streamAlert" style="display:none;margin:0 0 12px;padding:14px 16px;border-radius:8px;border:2px solid #cf222e;background:#fff5f5;max-width:1360px;font-size:14px;color:#660e0b;line-height:1.6;"></section>
+  <script>
+    (function () {
+      var m = location.pathname.match(/^(\/traffic)(?=\\/|$)/);
+      var base = m ? m[1] : "/traffic";
+      function esc(s) {
+        return String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      }
+      function applyUnavailable(d) {
+        var h = (d && d.rotation_health) || {};
+        var alert = h.alert;
+        var badge = document.getElementById("rotationBadge");
+        var runEl = document.getElementById("runStatus");
+        var telEl = document.getElementById("yoloTelemetry");
+        if (badge) {
+          badge.textContent = h.system_ok === false ? "CCTV 동작 불가" : badge.textContent;
+          if (h.system_ok === false) {
+            badge.style.background = "#ffebe9";
+            badge.style.color = "#cf222e";
           }
         }
+        if (runEl && h.its_health && h.its_health.ok === false) {
+          runEl.textContent = "ITS 사용 불가 (" + (h.its_health.its_api_result_code || h.its_health.error_code || "") + ")";
+        } else if (runEl && runEl.textContent.indexOf("확인 중") >= 0) {
+          runEl.textContent = "상태 응답 수신";
+        }
+        if (telEl && telEl.textContent.indexOf("로딩") >= 0) {
+          telEl.textContent = h.system_ok === false ? "ITS/CCTV 사용 불가 — 상세는 상단 배너 참고" : "텔레메트리 준비됨";
+        }
+        var box = document.getElementById("streamAlert");
+        if (!box || !alert) return;
+        box.style.display = "block";
+        var code = alert.its_api_result_code || (h.its_health && h.its_health.its_api_result_code) || "";
+        box.innerHTML =
+          '<div style="font-size:16px;font-weight:700;margin-bottom:8px;">' + esc(alert.title || "CCTV 동작 불가") + "</div>" +
+          (code && code !== "—" ? '<div style="font-weight:700;margin-bottom:6px;">ITS API 오류 코드: ' + esc(code) + "</div>" : "") +
+          "<div>" + esc(alert.message || "") + "</div>";
+      }
+      fetch(base + "/rotation/status", { credentials: "same-origin" })
+        .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+        .then(applyUnavailable)
+        .catch(function (err) {
+          var badge = document.getElementById("rotationBadge");
+          var runEl = document.getElementById("runStatus");
+          var telEl = document.getElementById("yoloTelemetry");
+          if (badge) { badge.textContent = "상태 조회 실패"; badge.style.background = "#ffebe9"; badge.style.color = "#cf222e"; }
+          if (runEl) runEl.textContent = "API 연결 실패: " + (err.message || err);
+          if (telEl) telEl.textContent = base + "/rotation/status 호출 실패";
+        });
+    })();
+  </script>
 
-        function ensureDebugCard(cctv) {
-          if (!cctv || debugCctvs.includes(cctv)) return;
-          debugCctvs.push(cctv);
+  <section id="rotationPanel" style="margin:0 0 16px;max-width:1360px;">
+    <div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px 16px;margin-bottom:10px;">
+      <span id="rotationBadge" style="display:inline-block;padding:4px 10px;border-radius:999px;font-size:12px;font-weight:600;background:#e9ecef;color:#495057;">확인 중</span>
+      <span id="runStatus" style="font-size:13px;color:#444;">상태 확인 중…</span>
+    </div>
+    <div style="font-size:22px;font-weight:700;margin-bottom:6px;">
+      로테이션 지점: <span id="activeCctvLabel" style="color:#0969da;">—</span>
+    </div>
+    <p id="rotationDetail" style="margin:0 0 8px;font-size:13px;color:#555;">마지막 추론 지점: — · 주기 —초</p>
+    <div id="rotationSiteChips" style="margin-bottom:4px;line-height:1.6;"></div>
+  </section>
+
+  <h3 style="margin-top:0;">
+    총 <span id="countValue">0</span>
+    (상행 <span id="upCountValue">0</span> / 하행 <span id="downCountValue">0</span>)
+    <small id="currentCctv" style="color:#666;"></small>
+  </h3>
+
+  <div style="margin-top:16px;">
+    <div style="font-size:12px;color:#666;margin-bottom:8px;">
+      ROI 디버그 (모델 입력 크롭 + 박스) · WebSocket <code>debug_image</code> 수신 시 갱신
+    </div>
+    <div id="debugGrid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:8px;max-width:1360px;"></div>
+  </div>
+
+  <pre id="yoloTelemetry" style="font-size:12px;color:#444;max-width:920px;white-space:pre-wrap;border-left:3px solid #ccc;padding-left:10px;margin-top:16px;">YOLO 텔레메트리 로딩…</pre>
+
+  <div id="debugBox" style="
+    position:fixed;
+    right:10px;
+    bottom:10px;
+    max-width:min(420px, 92vw);
+    background:rgba(0,0,0,0.82);
+    color:#0f0;
+    padding:10px 12px;
+    font-size:11px;
+    font-family:ui-monospace,monospace;
+    z-index:9999;
+    border-radius:6px;
+    line-height:1.45;
+  ">검출 대기…</div>
+
+  <script>
+    const PATH_TRAFFIC = location.pathname.match(/^(\/traffic)(?=\\/|$)/);
+    const PATH_TUNING = location.pathname.match(/^(\/tuning)(?=\\/|$)/);
+    const TRAFFIC_BASE = PATH_TRAFFIC ? PATH_TRAFFIC[1] : (PATH_TUNING ? "/traffic" : "/traffic");
+
+    function fetchJsonWithTimeout(url, ms) {
+      ms = ms || 12000;
+      const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+      const timer = ctrl ? setTimeout(function () { try { ctrl.abort(); } catch (_) {} }, ms) : null;
+      return fetch(url, ctrl ? { signal: ctrl.signal } : {})
+        .then(function (r) {
+          if (!r.ok) throw new Error("HTTP " + r.status);
+          return r.json();
+        })
+        .finally(function () {
+          if (timer) clearTimeout(timer);
+        });
+    }
+
+    function showPanelUnavailable(reason) {
+      const badge = document.getElementById("rotationBadge");
+      const runEl = document.getElementById("runStatus");
+      const telEl = document.getElementById("yoloTelemetry");
+      if (badge) {
+        badge.textContent = "CCTV 동작 불가";
+        badge.style.background = "#ffebe9";
+        badge.style.color = "#cf222e";
+      }
+      if (runEl) runEl.textContent = reason || "서버 상태를 가져오지 못했습니다.";
+      if (telEl) telEl.textContent = reason || "상태 API 응답 없음";
+      refreshStreamAlert({
+        rotation_health: {
+          system_ok: false,
+          alert: {
+            severity: "error",
+            title: "CCTV 동작 불가",
+            its_api_result_code: "",
+            message: reason || "서버와 통신할 수 없습니다. /traffic/ 경로·백엔드 컨테이너를 확인하세요.",
+          },
+        },
+        streams_effective_count: 0,
+      });
+    }
+
+    const DEFAULT_DEBUG_CCTVS = [
+      "수원신갈IC", "판교분기점", "서울TG", "용인IC", "신갈분기점", "서평택분기점",
+      "비봉IC", "매송나들목", "장항IC", "자유로분기점", "일산IC", "양주IC",
+      "의정부IC", "동의정부IC북측", "남구리IC", "구리IC", "중랑IC교",
+      "신월IC", "김포IC", "서운분기점", "토평IC", "서하남IC", "상일IC", "시흥IC", "안현분기점",
+    ];
+    let debugCctvs = DEFAULT_DEBUG_CCTVS.slice();
+    let rotationState = {
+      running: false,
+      active: "",
+      activeGroup: [],
+      parallelSlots: 4,
+      lastProcessed: "",
+      sites: [],
+      sec: 30,
+      streamsEffective: null,
+    };
+    let lastDetectionAt = {};
+    const BADGE_RECENT_MS = 15000;
+    let debugFrameIdByCctv = {};
+    let debugImagePollIdx = 0;
+
+    let wsInfer = null;
+    let wsPingTimer = null;
+    let wsReconnectTimer = null;
+    const wsBackoff = { stop: false, backoffMs: 1500 };
+    let statusTimer = null;
+    let pollLastInferKey = "";
+    const debug = document.getElementById("debugBox");
+
+    function setActiveGroup(group) {
+      rotationState.activeGroup = Array.isArray(group) ? group.filter(Boolean) : [];
+      rotationState.active = rotationState.activeGroup[0] || "";
+      applyCardRotationState();
+    }
+
+    function buildDebugCards() {
+      const grid = document.getElementById("debugGrid");
+      if (!grid) return;
+      grid.innerHTML = "";
+      for (const cctv of debugCctvs) {
+        const card = document.createElement("div");
+        card.className = "dbg-card";
+        card.setAttribute("data-cctv", cctv);
+        card.style.cssText = "border:1px solid #ccc;padding:6px;background:#f9f9f9;border-radius:6px;";
+        card.innerHTML =
+          '<div style="display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:4px;">' +
+            '<span style="font-size:12px;font-weight:600;">' + cctv + '</span>' +
+            '<span id="debugBadge-' + cctv + '" style="font-size:10px;padding:2px 6px;border-radius:999px;background:#e9ecef;color:#666;">대기</span>' +
+          '</div>' +
+          '<img id="debugImage-' + cctv + '" alt="" style="width:100%;border:1px solid #ddd;background:#111;min-height:110px;border-radius:4px;object-fit:contain;" />' +
+          '<div id="debugMeta-' + cctv + '" style="font-size:11px;color:#555;margin-top:6px;word-break:break-word;">대기중</div>';
+        grid.appendChild(card);
+      }
+      applyCardRotationState();
+    }
+
+    function syncInferTimesFromStatus(d) {
+      const m = (d && d.last_infer_at_per_cctv)
+        || ((d && d.telemetry && d.telemetry.last_infer_at_per_cctv) || {});
+      for (const cctv of Object.keys(m)) {
+        const iso = m[cctv];
+        if (!iso) continue;
+        const t = Date.parse(iso);
+        if (Number.isFinite(t)) lastDetectionAt[cctv] = t;
+      }
+    }
+
+    function setDebugImage(cctv, b64) {
+      if (!cctv || !b64) return;
+      const img = document.getElementById("debugImage-" + cctv);
+      if (!img) return;
+      img.src = "data:image/jpeg;base64," + b64;
+      img.alt = "ROI " + cctv;
+      img.style.visibility = "visible";
+    }
+
+    function pollDebugImages() {
+      const now = Date.now();
+      const recent = debugCctvs.filter(function (c) {
+        return lastDetectionAt[c] && (now - lastDetectionAt[c] < BADGE_RECENT_MS);
+      });
+      if (!recent.length) return;
+      const batch = 4;
+      for (let i = 0; i < batch; i++) {
+        const cctv = recent[(debugImagePollIdx + i) % recent.length];
+        const knownFid = debugFrameIdByCctv[cctv] || 0;
+        fetch(TRAFFIC_BASE + "/rotation/debug-image/" + encodeURIComponent(cctv) + "?frame_id=" + knownFid)
+          .then(function (r) { return r.json(); })
+          .then(function (data) {
+            if (!data || data.unchanged) return;
+            const key = data.cctv || cctv;
+            if (data.frame_id) debugFrameIdByCctv[key] = data.frame_id;
+            if (data.debug_image) setDebugImage(key, data.debug_image);
+          })
+          .catch(function () { return null; });
+      }
+      debugImagePollIdx = (debugImagePollIdx + batch) % Math.max(recent.length, 1);
+    }
+
+    function cardBadgeText(cctv) {
+      const now = Date.now();
+      const activeGroup = rotationState.activeGroup || [];
+      const inParallel = activeGroup.includes(cctv);
+      const last = rotationState.lastProcessed || "";
+      const recent = lastDetectionAt[cctv] && (now - lastDetectionAt[cctv] < BADGE_RECENT_MS);
+      if (cctv === last && recent) return "디버깅 중";
+      if (recent) return "추론 수신";
+      if (inParallel) return "병렬 로테이션";
+      return "대기";
+    }
+
+    function applyBadgeStyle(badge, label) {
+      if (label === "디버깅 중" || label === "추론 수신") {
+        badge.style.background = "#ddf4ff";
+        badge.style.color = "#0550ae";
+      } else if (label === "병렬 로테이션") {
+        badge.style.background = "#dafbe1";
+        badge.style.color = "#116329";
+      } else {
+        badge.style.background = "#e9ecef";
+        badge.style.color = "#666";
+      }
+    }
+
+    function applyCardRotationState() {
+      for (const cctv of debugCctvs) {
+        const badge = document.getElementById("debugBadge-" + cctv);
+        if (!badge) continue;
+        const label = cardBadgeText(cctv);
+        badge.textContent = label;
+        applyBadgeStyle(badge, label);
+      }
+    }
+
+    function escapeHtml(s) {
+      return String(s || "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    function refreshStreamAlert(d) {
+      const el = document.getElementById("streamAlert");
+      if (!el) return;
+      const health = (d && d.rotation_health) || {};
+      const alert = health.alert || null;
+      const idle = (d && d.idle_reason) || null;
+
+      if (alert && (alert.title || alert.message)) {
+        const apiCode = alert.its_api_result_code;
+        const isWarn = alert.severity === "warning";
+        el.style.display = "block";
+        el.style.borderColor = isWarn ? "#d4a72c" : "#cf222e";
+        el.style.background = isWarn ? "#fff8c5" : "#fff5f5";
+        el.style.color = isWarn ? "#633c01" : "#660e0b";
+        let html = '<div style="font-size:16px;font-weight:700;margin-bottom:8px;">'
+          + escapeHtml(alert.title || "CCTV 동작 불가") + "</div>";
+        if (apiCode && apiCode !== "—") {
+          html += '<div style="font-size:15px;font-weight:700;margin-bottom:6px;color:#cf222e;">'
+            + 'ITS API 오류 코드: <span style="font-family:ui-monospace,monospace;">'
+            + escapeHtml(apiCode) + "</span></div>";
+        }
+        const ih = health.its_health || {};
+        if (!apiCode && ih.its_api_result_code && ih.its_api_result_code !== "—") {
+          html += '<div style="font-size:15px;font-weight:700;margin-bottom:6px;color:#cf222e;">'
+            + 'ITS API 오류 코드: <span style="font-family:ui-monospace,monospace;">'
+            + escapeHtml(ih.its_api_result_code) + "</span></div>";
+        }
+        if (alert.its_error_code && String(alert.its_error_code).indexOf("stream_") === 0 && !apiCode) {
+          html += '<div style="font-size:13px;font-weight:600;margin-bottom:6px;">오류: '
+            + escapeHtml(alert.its_error_code) + "</div>";
+        }
+        if (alert.its_error_code && apiCode === "4001") {
+          html += '<div style="font-size:12px;margin-bottom:6px;opacity:0.9;">분류: '
+            + escapeHtml(alert.its_error_code) + "</div>";
+        }
+        html += "<div>" + escapeHtml(alert.message || "") + "</div>";
+        if (health.stream_source) {
+          html += '<div style="margin-top:8px;font-size:12px;opacity:0.85;">스트림 소스: '
+            + escapeHtml(health.stream_source) + "</div>";
+        }
+        el.innerHTML = html;
+        return;
+      }
+
+      if (idle && idle.message && (health.system_ok === false || (d.streams_effective_count || 0) <= 0)) {
+        el.style.display = "block";
+        el.style.borderColor = "#cf222e";
+        el.style.background = "#fff5f5";
+        const apiFromIdle = idle.its_api_result_code || "";
+        let html = '<div style="font-size:16px;font-weight:700;margin-bottom:8px;">CCTV 동작 불가</div>';
+        if (apiFromIdle && apiFromIdle !== "—") {
+          html += '<div style="font-weight:700;margin-bottom:6px;">ITS API 오류 코드: '
+            + escapeHtml(apiFromIdle) + "</div>";
+        }
+        html += "<div>" + escapeHtml(idle.message) + "</div>";
+        el.innerHTML = html;
+        return;
+      }
+
+      if (health.system_ok === false && !alert) {
+        el.style.display = "block";
+        el.innerHTML = "<strong>CCTV 동작 불가</strong><br/>스트림·ITS 설정을 확인하세요.";
+        return;
+      }
+
+      el.style.display = "none";
+      el.innerHTML = "";
+    }
+
+    function updateRotationPanel(d) {
+      syncInferTimesFromStatus(d);
+      const sites = Array.isArray(d.rotation_sites) ? d.rotation_sites : [];
+      if (sites.length) rotationState.sites = sites;
+      rotationState.running = !!(d.rotation_running || d.sequencer_running || d.yolo_running);
+      if (Array.isArray(d.active_cctv_group) && d.active_cctv_group.length) {
+        setActiveGroup(d.active_cctv_group);
+      } else {
+        rotationState.active = (d.active_cctv || "").trim();
+        if (rotationState.active) setActiveGroup([rotationState.active]);
+      }
+      rotationState.parallelSlots = d.rotation_parallel_slots || rotationState.parallelSlots || 4;
+      rotationState.lastProcessed = (d.last_cctv_processed || (d.telemetry || {}).last_cctv_processed || "").trim();
+      rotationState.sec = d.rotation_sec || rotationState.sec || 30;
+
+      let effSites;
+      if (typeof d.streams_effective_count === "number") {
+        effSites = d.streams_effective_count;
+        rotationState.streamsEffective = effSites;
+      } else {
+        const nameLen = (rotationState.sites && rotationState.sites.length)
+          ? rotationState.sites.length
+          : sites.length;
+        effSites = rotationState.streamsEffective != null ? rotationState.streamsEffective : nameLen;
+      }
+
+      const badge = document.getElementById("rotationBadge");
+      const runEl = document.getElementById("runStatus");
+      const activeEl = document.getElementById("activeCctvLabel");
+      const detailEl = document.getElementById("rotationDetail");
+      const chipsEl = document.getElementById("rotationSiteChips");
+
+      const health = d.rotation_health || {};
+      const systemOk = health.system_ok !== false && !(health.alert && health.alert.severity === "error");
+
+      if (badge) {
+        if (!systemOk) {
+          badge.textContent = "CCTV 동작 불가";
+          badge.style.background = "#ffebe9";
+          badge.style.color = "#cf222e";
+        } else if (rotationState.running) {
+          badge.textContent = "CCTV 로테이션 실행 중";
+          badge.style.background = "#dafbe1";
+          badge.style.color = "#116329";
+        } else {
+          badge.textContent =
+            effSites <= 0 ? "스트림·ITS 미설정 (로테이션 불가)" : "로테이션 대기";
+          badge.style.background = effSites <= 0 ? "#ffebe9" : "#e9ecef";
+          badge.style.color = effSites <= 0 ? "#cf222e" : "#495057";
+        }
+      }
+      if (runEl) {
+        const ih = health.its_health || {};
+        const itsLine = ih.ok === false
+          ? "ITS 사용 불가" + (ih.its_api_result_code ? " (" + ih.its_api_result_code + ")" : "")
+          : (ih.ok === true ? "ITS 정상" : "ITS 확인 중");
+        const seq = d.sequencer_running ? "시퀀서 ON" : "시퀀서 OFF";
+        const yolo = d.yolo_running ? "YOLO ON" : "YOLO OFF";
+        const spot = effSites > 0 ? "서버 유효 스트림 " + effSites + "곳" : "유효 스트림 0곳";
+        runEl.textContent =
+          itsLine + " · " + seq + " · " + yolo + " · " + spot + " · " + rotationState.sec + "초/지점";
+      }
+      if (activeEl) {
+        const group = rotationState.activeGroup || [];
+        activeEl.textContent = group.length
+          ? group.join(" · ")
+          : (rotationState.running ? "전환 대기" : "—");
+        activeEl.style.color = group.length ? "#1a7f37" : "#0969da";
+      }
+      if (detailEl) {
+        detailEl.textContent =
+          "병렬 " + (rotationState.activeGroup || []).length + "지점 · 마지막 추론: " +
+          (rotationState.lastProcessed || "—") +
+          " · 카운트 지점: " + ((d.count_status_summary || {}).cctv_name || "—");
+      }
+      if (chipsEl) {
+        if (effSites <= 0) {
+          const idleMsg = (d.idle_reason && d.idle_reason.message)
+            ? d.idle_reason.message
+            : "CCTV 스트림이 서버에 없습니다. .env 의 ITS_API_KEY 또는 CCTV_URL 을 설정하세요.";
+          chipsEl.innerHTML =
+            '<span class="rotation-chip" style="border-color:#cf222e;background:#fff5f5;">' +
+            idleMsg +
+            "</span>";
+        } else {
+          const list = rotationState.sites.length ? rotationState.sites : debugCctvs;
+          const now = Date.now();
+          chipsEl.innerHTML = list.map(function(name) {
+            let cls = "rotation-chip";
+            const recent = lastDetectionAt[name] && (now - lastDetectionAt[name] < BADGE_RECENT_MS);
+            if (name === rotationState.lastProcessed && recent) cls += " rotation-chip--infer";
+            return '<span class="' + cls + '">' + name + "</span>";
+          }).join("");
+        }
+      }
+      refreshStreamAlert(d);
+      applyCardRotationState();
+    }
+
+    function ensureDebugCard(cctv) {
+      if (!cctv || debugCctvs.includes(cctv)) return;
+      debugCctvs.push(cctv);
+      buildDebugCards();
+    }
+
+    function loadDebugSites() {
+      return fetchJsonWithTimeout(TRAFFIC_BASE + "/preview-sites", 15000)
+        .then((data) => {
+          const names = (data.sites || []).map((s) => s.name).filter(Boolean);
+          const eff = typeof data.effective_site_count === "number" ? data.effective_site_count : names.length;
+          rotationState.streamsEffective = eff;
+          debugCctvs = names.length ? names : DEFAULT_DEBUG_CCTVS.slice();
           buildDebugCards();
-        }
+          refreshStreamAlert({
+            rotation_health: data.rotation_health,
+            idle_reason: data.idle_reason,
+            streams_effective_count: eff,
+          });
+        })
+        .catch((err) => {
+          debugCctvs = DEFAULT_DEBUG_CCTVS.slice();
+          buildDebugCards();
+          showPanelUnavailable(
+            "지점 목록 조회 실패: " + (err && err.message ? err.message : "네트워크 오류")
+          );
+        });
+    }
 
-        function loadDebugSites() {
-          return fetch("/preview-sites")
-            .then(r => r.json())
-            .then((data) => {
-              const names = (data.sites || [])
-                .map((site) => site.name)
-                .filter(Boolean);
-              debugCctvs = names.length ? names : DEFAULT_DEBUG_CCTVS.slice();
-              buildDebugCards();
-            })
-            .catch(() => {
-              debugCctvs = DEFAULT_DEBUG_CCTVS.slice();
-              buildDebugCards();
+    function fmtNumber(value, digits) {
+      digits = digits === undefined ? 2 : digits;
+      const n = Number(value);
+      return Number.isFinite(n) ? n.toFixed(digits) : "0.00";
+    }
+
+    function updateDebugCard(msg, opts) {
+      opts = opts || {};
+      const cctv = msg.cctv || msg.cctv_name || "";
+      if (!cctv) return;
+      ensureDebugCard(cctv);
+      const meta = document.getElementById("debugMeta-" + cctv);
+      if (!opts.skipImage && msg.debug_image) {
+        setDebugImage(cctv, msg.debug_image);
+        if (msg.frame_id) debugFrameIdByCctv[cctv] = msg.frame_id;
+      } else if (!opts.skipImage && msg.frame_id) {
+        debugFrameIdByCctv[cctv] = msg.frame_id;
+      }
+      lastDetectionAt[cctv] = Date.now();
+
+      if (meta) {
+        meta.textContent =
+          "count=" + (msg.site_count ?? 0) +
+          " | main=" + (msg.main_flow_count ?? 0) +
+          " | flow/s=" + fmtNumber(msg.flow_per_sec) +
+          " | dir=" + fmtNumber(msg.direction_score) +
+          " | valid=" + (msg.is_valid === false ? "N" : "Y") +
+          " | up=" + (msg.up_count ?? 0) +
+          " | down=" + (msg.down_count ?? 0) +
+          " | roi=(" + (msg.roi_x0 ?? 0) + "," + (msg.roi_y0 ?? 0) + ")-(" +
+            (msg.roi_x1 ?? 0) + "," + (msg.roi_y1 ?? 0) + ")" +
+          " | line_global=" + (msg.line_y_global ?? msg.line_y ?? 0) +
+          " | tracks=" + (msg.active_tracks ?? 0) + "/" + (msg.persisted_tracks ?? 0) +
+          " | age_ms=" + Math.round(msg.frame_age_ms ?? 0) +
+          " | t=" + (msg.timestamp || "");
+      }
+      applyCardRotationState();
+    }
+
+    function reconcilePollInferActivity(data) {
+      const cctv = ((data || {}).cctv || (data || {}).cctv_name || "").trim();
+      const fid = (data || {}).frame_id;
+      if (!cctv || fid == null || Number(fid) <= 0) return;
+      const k = String(cctv) + "|" + String(fid);
+      if (k === pollLastInferKey) return;
+      pollLastInferKey = k;
+      lastDetectionAt[cctv] = Date.now();
+      updateDebugCard(data);
+    }
+
+    function updateCounts(data) {
+      document.getElementById("countValue").textContent = data.count ?? 0;
+      document.getElementById("upCountValue").textContent = data.up_count ?? 0;
+      document.getElementById("downCountValue").textContent = data.down_count ?? 0;
+      const name = data.cctv_name || data.cctv || "";
+      document.getElementById("currentCctv").textContent = name ? "(" + name + ")" : "";
+    }
+
+    function updateYoloTelemetry() {
+      const telEl = document.getElementById("yoloTelemetry");
+      return fetchJsonWithTimeout(TRAFFIC_BASE + "/rotation/status", 12000)
+        .then((d) => {
+          updateRotationPanel(d);
+          if (!telEl) return;
+          const t = d.telemetry || {};
+          const rh = d.rotation_health || {};
+          const ih = rh.its_health || {};
+          const seq = d.sequencer_running ? "실행 중" : "대기";
+          const yolo = d.yolo_running ? "실행 중" : "대기";
+          const inf = t.infer_total ?? 0;
+          const last = t.last_infer_at || "—";
+          const mode = t.ingest_mode || "—";
+          const yset = t.yolo_ingest_url_set
+            ? "YOLO_INGEST_URL 설정됨"
+            : "YOLO_INGEST_URL 없음";
+          const itsLine = ih.ok === false
+            ? "ITS: 사용 불가 " + (ih.its_api_result_code || ih.error_code || "")
+            : (ih.ok === true ? "ITS: 정상 (목록 " + (ih.row_count || "?") + "건)" : "ITS: —");
+          telEl.textContent = [
+            itsLine,
+            "서버 YOLO: 시퀀서 " + seq + " | YOLO 워커 " + yolo + " | " + yset,
+            "로테이션 지점: " + (d.active_cctv || "—") + " (주기 " + (d.rotation_sec || "—") + "초)",
+            "모드: " + mode + " | 추론 누적 " + inf + "회 | 마지막 추론 시각 " + last,
+            "마지막 처리 지점: " + (d.last_cctv_processed || t.last_cctv_processed || "—"),
+            t.line_cross_note || "",
+          ].join("\\n");
+        })
+        .catch((err) => {
+          showPanelUnavailable(
+            "/rotation/status 조회 실패: " + (err && err.message ? err.message : "타임아웃·네트워크")
+          );
+        });
+    }
+
+    function startStatusPolling() {
+      if (statusTimer) clearInterval(statusTimer);
+      const tick = () => {
+        fetch(TRAFFIC_BASE + "/count-status")
+          .then((r) => r.json())
+          .then(function (payload) {
+            updateCounts(payload);
+            reconcilePollInferActivity(payload);
+            if (payload.debug_image && (payload.cctv || payload.cctv_name)) {
+              updateDebugCard(payload);
+            }
+          })
+          .catch(() => null);
+        pollDebugImages();
+        updateYoloTelemetry();
+      };
+      tick();
+      statusTimer = setInterval(tick, 1000);
+    }
+
+    function scheduleWsReconnect(reason) {
+      if (wsBackoff.stop || wsReconnectTimer) return;
+      const delay = wsBackoff.backoffMs;
+      wsBackoff.backoffMs = Math.min(wsBackoff.backoffMs * 1.5, 45000);
+      wsReconnectTimer = setTimeout(() => {
+        wsReconnectTimer = null;
+        if (!wsBackoff.stop) openDetectionWs();
+      }, delay);
+      if (debug && reason) debug.textContent = "WS 재연결(" + delay + "ms) " + reason + "…";
+
+    }
+
+    function openDetectionWs() {
+      if (wsPingTimer) {
+        clearInterval(wsPingTimer);
+        wsPingTimer = null;
+      }
+      const old = wsInfer;
+      wsInfer = null;
+      if (old) {
+        try {
+          old.onmessage = null;
+          old.onopen = null;
+          old.onerror = null;
+          old.onclose = null;
+        } catch (_) {}
+        try {
+          if (old.readyState === WebSocket.OPEN || old.readyState === WebSocket.CONNECTING) {
+            old.close();
+          }
+        } catch (_) {}
+      }
+
+      const proto = location.protocol === "https:" ? "wss:" : "ws:";
+      const url = proto + "//" + location.host + TRAFFIC_BASE + "/ws";
+      wsInfer = new WebSocket(url);
+
+      wsInfer.onmessage = (evt) => {
+        try {
+          const msg = JSON.parse(evt.data);
+          if (msg.type === "segment") {
+            const group = Array.isArray(msg.cctvs) && msg.cctvs.length
+              ? msg.cctvs
+              : (msg.cctv ? [msg.cctv] : []);
+            setActiveGroup(group);
+            updateCounts({ cctv: group[0] || msg.cctv });
+            updateRotationPanel({
+              rotation_running: true,
+              active_cctv: group[0] || msg.cctv,
+              active_cctv_group: group,
+              rotation_sites: rotationState.sites,
+              rotation_sec: rotationState.sec,
+              rotation_parallel_slots: rotationState.parallelSlots,
+              telemetry: { last_cctv_processed: rotationState.lastProcessed },
+              count_status_summary: { cctv_name: group[0] || msg.cctv },
             });
-        }
-
-        let wsInfer = null;
-        let wsPingTimer = null;
-        let isRunning = false;
-        const debug = document.getElementById("debugBox");
-
-        function fmtNumber(value, digits = 2) {
-          const n = Number(value);
-          return Number.isFinite(n) ? n.toFixed(digits) : "0.00";
-        }
-
-        function updateDebugCard(msg) {
-          const cctv = msg.cctv || "";
-          if (!cctv) return;
-          ensureDebugCard(cctv);
-          const img = document.getElementById("debugImage-" + cctv);
-          const meta = document.getElementById("debugMeta-" + cctv);
-          if (img && msg.debug_image) {
-            img.src = "data:image/jpeg;base64," + msg.debug_image;
+          } else if (msg.type === "detection") {
+            updateCounts(msg);
+            updateDebugCard(msg, { skipImage: true });
+            if (msg.frame_id) debugFrameIdByCctv[msg.cctv || ""] = msg.frame_id;
+            if (debug) {
+              const tracks = (msg.boxes || []).map((b) => ({ id: b.track_id, cx: b.cx, cy: b.cy }));
+              const trackIds = tracks.map((t) => t.id).filter(Boolean).join(",");
+              debug.innerHTML =
+                "<strong>" + (msg.cctv || "") + "</strong><br>" +
+                "COUNT " + (msg.count ?? 0) +
+                " | UP/DOWN " + (msg.up_count ?? 0) + "/" + (msg.down_count ?? 0) + "<br>" +
+                "FLOW/S " + fmtNumber(msg.flow_per_sec) +
+                " | DIR " + fmtNumber(msg.direction_score) + "<br>" +
+                "VALID " + (msg.is_valid === false ? "false" : "true") +
+                (msg.invalid_reason ? (" | " + msg.invalid_reason) : "") + "<br>" +
+                "ROI y0 " + (msg.roi_y0 ?? 0) +
+                " | LINE " + (msg.line_y ?? 0) +
+                " | GLOBAL " + (msg.line_y_global ?? msg.line_y ?? 0) + "<br>" +
+                "BUCKET " + (msg.time_bucket || "") +
+                " | LAG " + fmtNumber(msg.bucket_lag_sec) + "s<br>" +
+                "BOXES " + ((msg.boxes && msg.boxes.length) ? msg.boxes.length : 0) +
+                " | TRACKS " + trackIds + "<br>" +
+                (msg.timestamp || "");
+            }
           }
-          if (meta) {
-            meta.textContent =
-              "count=" + (msg.site_count ?? 0) +
-              " | main=" + (msg.main_flow_count ?? 0) +
-              " | flow/s=" + fmtNumber(msg.flow_per_sec) +
-              " | dir=" + fmtNumber(msg.direction_score) +
-              " | valid=" + (msg.is_valid === false ? "N" : "Y") +
-              " | up=" + (msg.up_count ?? 0) +
-              " | down=" + (msg.down_count ?? 0) +
-              " | roi_y0=" + (msg.roi_y0 ?? 0) +
-              " | line_y=" + (msg.line_y ?? 0) +
-              " | bucket=" + (msg.time_bucket || "") +
-              " | t=" + (msg.timestamp || "");
-          }
+        } catch (_) {}
+      };
+
+      wsInfer.onopen = () => {
+        wsBackoff.backoffMs = 1500;
+        if (debug) debug.textContent = "WS 연결됨 · " + url;
+        wsPingTimer = setInterval(() => {
+          try {
+            if (wsInfer && wsInfer.readyState === WebSocket.OPEN) wsInfer.send("ping");
+          } catch (_) {}
+        }, 20000);
+      };
+
+      wsInfer.onerror = () => {
+        scheduleWsReconnect("error");
+      };
+
+      wsInfer.onclose = () => {
+        wsInfer = null;
+        if (wsPingTimer) {
+          clearInterval(wsPingTimer);
+          wsPingTimer = null;
         }
+        if (!wsBackoff.stop) scheduleWsReconnect("연결 종료");
+      };
+    }
 
-        function setRunUi(running) {
-          isRunning = running;
-          document.getElementById("btnStart").disabled = running;
-          document.getElementById("btnStop").disabled = !running;
-          document.getElementById("runStatus").textContent = running ? "실행 중" : "대기 중";
-        }
+    function startDetectionWebSocket() {
+      wsBackoff.stop = false;
+      openDetectionWs();
+    }
 
-        let statusTimer = null;
-        function updateYoloTelemetry() {
-          const el = document.getElementById("yoloTelemetry");
-          if (!el) return;
-          fetch("/rotation/status")
-            .then(r => r.json())
-            .then((d) => {
-              const t = d.telemetry || {};
-              const seq = d.sequencer_running ? "실행 중" : "대기";
-              const inf = t.infer_total ?? 0;
-              const last = t.last_infer_at || "—";
-              const mode = t.ingest_mode || "—";
-              const yset = t.yolo_ingest_url_set ? "YOLO_INGEST_URL 설정됨(단일 URL 폴백 가능)" : "YOLO_INGEST_URL 없음(지점별 URL만 사용)";
-              el.textContent = [
-                "서버 YOLO (프론트 CCTV와 무관): 시퀀서 " + seq + " | " + yset,
-                "모드: " + mode + " | 추론 누적 " + inf + "회 | 마지막 추론 시각 " + last,
-                "마지막 처리 지점: " + (t.last_cctv_processed || "—"),
-                t.line_cross_note || "",
-              ].join("\\n");
-            })
-            .catch(() => {
-              el.textContent = "/rotation/status 조회 실패 (서버 확인)";
-            });
-        }
-        function startStatusPolling() {
-          if (statusTimer) clearInterval(statusTimer);
-          const update = () => {
-            fetch("/count-status")
-              .then(r => r.json())
-              .then(s => {
-                document.getElementById("countValue").textContent = s.count ?? 0;
-                document.getElementById("upCountValue").textContent = s.up_count ?? 0;
-                document.getElementById("downCountValue").textContent = s.down_count ?? 0;
-                const name = s.cctv_name || "";
-                document.getElementById("currentCctv").textContent =
-                  name ? "(" + name + ")" : "";
-                const logs = Array.isArray(s.logs) ? s.logs : [];
-                document.getElementById("logBox").textContent = logs.join("\\n");
-              })
-              .catch(() => null);
-            updateYoloTelemetry();
-          };
-          update();
-          statusTimer = setInterval(update, 1000);
-        }
+    window.addEventListener("beforeunload", () => {
+      wsBackoff.stop = true;
+      if (wsReconnectTimer) {
+        clearTimeout(wsReconnectTimer);
+        wsReconnectTimer = null;
+      }
+      try {
+        if (wsInfer) wsInfer.close();
+      } catch (_) {}
+    });
 
-        function startDetectionWebSocket() {
-          if (wsInfer && wsInfer.readyState <= 1) {
-            wsInfer.close();
-          }
-          if (wsPingTimer) {
-            clearInterval(wsPingTimer);
-            wsPingTimer = null;
-          }
-          const proto = location.protocol === "https:" ? "wss:" : "ws:";
-          wsInfer = new WebSocket(proto + "//" + location.host + "/ws");
-          wsInfer.onmessage = (evt) => {
-            try {
-              const msg = JSON.parse(evt.data);
-              if (msg.type === "segment") {
-                const cctvEl = document.getElementById("currentCctv");
-                if (cctvEl && msg.cctv)
-                  cctvEl.textContent = "(" + msg.cctv + ")";
-              } else if (msg.type === "detection") {
-                // 🔥 화면 표시만 (디버깅용)
-                const el = document.getElementById("countValue");
-                if (el && typeof msg.count === "number")
-                  el.textContent = msg.count;
-                const upEl = document.getElementById("upCountValue");
-                if (upEl && typeof msg.up_count === "number")
-                  upEl.textContent = msg.up_count;
-                const downEl = document.getElementById("downCountValue");
-                if (downEl && typeof msg.down_count === "number")
-                  downEl.textContent = msg.down_count;
-                const cctvEl = document.getElementById("currentCctv");
-                if (cctvEl && msg.cctv)
-                  cctvEl.textContent = "(" + msg.cctv + ")";
-                updateDebugCard(msg);
+    updateYoloTelemetry();
 
-                // 👉 디버깅용 로그
-                const tracks = (msg.boxes || []).map((b) => ({
-                  id: b.track_id,
-                  cx: b.cx,
-                  cy: b.cy
-                }));
-                console.log("YOLO:", {
-                  cctv: msg.cctv,
-                  count: msg.count,
-                  site: msg.site_count,
-                  main_flow: msg.main_flow_count,
-                  flow_per_sec: msg.flow_per_sec,
-                  direction_score: msg.direction_score,
-                  valid: msg.is_valid,
-                  invalid_reason: msg.invalid_reason,
-                  time_bucket: msg.time_bucket,
-                  roi_y0: msg.roi_y0,
-                  line_y: msg.line_y,
-                  boxes: (msg.boxes || []).length,
-                  tracks: tracks,
-                });
+    loadDebugSites().finally(() => {
+      const tuningLink = document.getElementById("tuningLink");
+      if (tuningLink) {
+        tuningLink.href = TRAFFIC_BASE + "/tuning/roi";
+      }
+      startStatusPolling();
+      startDetectionWebSocket();
+    });
+  </script>
+</body>
+</html>
+"""
 
-                // 🔥 화면 디버그 표시
-                if (debug) {
-                  const trackIds = tracks.map(t => t.id).join(",");
-                  debug.innerHTML =
-                    "CCTV: " + (msg.cctv || "") + "<br>" +
-                    "COUNT: " + (msg.count ?? 0) + "<br>" +
-                    "MAIN FLOW: " + (msg.main_flow_count ?? 0) + "<br>" +
-                    "FLOW/S: " + fmtNumber(msg.flow_per_sec) + "<br>" +
-                    "DIR SCORE: " + fmtNumber(msg.direction_score) + "<br>" +
-                    "VALID: " + (msg.is_valid === false ? "false" : "true") + "<br>" +
-                    "INVALID: " + (msg.invalid_reason || "-") + "<br>" +
-                    "UP: " + (msg.up_count ?? 0) + "<br>" +
-                    "DOWN: " + (msg.down_count ?? 0) + "<br>" +
-                    "SITE COUNT: " + (msg.site_count ?? 0) + "<br>" +
-                    "ROI Y0: " + (msg.roi_y0 ?? 0) + "<br>" +
-                    "LINE Y: " + (msg.line_y ?? 0) + "<br>" +
-                    "BUCKET: " + (msg.time_bucket || "") + "<br>" +
-                    "LAG: " + fmtNumber(msg.bucket_lag_sec) + "s<br>" +
-                    "BOXES: " + ((msg.boxes && msg.boxes.length) ? msg.boxes.length : 0) + "<br>" +
-                    "TRACKS: " + trackIds + "<br>" +
-                    "TIME: " + (msg.timestamp || "");
-                }
-              }
-            } catch (_) {}
-          };
-          wsInfer.onopen = () => {
-            wsPingTimer = setInterval(() => {
-              try {
-                if (wsInfer && wsInfer.readyState === WebSocket.OPEN) wsInfer.send("ping");
-              } catch (_) {}
-            }, 20000);
-          };
-        }
 
-        function startRotation() {
-          if (isRunning) return;
-          fetch("/rotation/start", { method: "POST" })
-            .then(res => {
-              if (res.status === 400) {
-                return res.json().then(j => {
-                  const d = j.detail;
-                  throw new Error(typeof d === "string" ? d : JSON.stringify(d));
-                });
-              }
-              if (!res.ok) throw new Error("start_failed");
-              return res.json();
-            })
-            .then(() => {
-              startStatusPolling();
-              startDetectionWebSocket();
-              setRunUi(true);
-            })
-            .catch(e => alert("로테이션 시작 실패: " + (e.message || e)));
-        }
+def roi_tuning_html() -> str:
+    return """<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <title>ROI / Line Crossing 튜닝</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 16px; max-width: 1200px; }
+    .row { display: flex; gap: 20px; flex-wrap: wrap; align-items: flex-start; }
+    .panel { flex: 1 1 320px; }
+    label { display: block; margin: 10px 0 4px; font-size: 13px; color: #444; }
+    input[type=range] { width: 100%; }
+    select, button { font-size: 14px; padding: 6px 10px; }
+    #preview { width: 100%; max-width: 960px; border: 1px solid #ccc; border-radius: 8px; background: #111; min-height: 240px; }
+    .meta { font-size: 12px; color: #666; margin-top: 8px; line-height: 1.5; }
+    .legend span { display: inline-block; margin-right: 12px; font-size: 12px; }
+    .legend .c-roi { color: #00d7ff; }
+    .legend .c-line { color: #ff3737; }
+    .legend .c-sug { color: #50ff78; }
+  </style>
+</head>
+<body>
+  <h2>CCTV별 ROI · Line Crossing 튜닝</h2>
+  <p style="color:#555;font-size:14px;">
+    빨간선=현재 카운트 라인, 초록선=프레임 엣지 기반 제안. 저장 시 <code>data/camera_config_overrides.json</code>에 반영(재시작 불필요).
+    <a id="dashboardLink" href="/traffic/">← 대시보드</a>
+  </p>
+  <div class="row">
+    <div class="panel">
+      <label for="siteSelect">지점</label>
+      <select id="siteSelect"></select>
+      <button type="button" id="refreshBtn" style="margin-left:8px;">프레임 새로고침</button>
+      <label>ROI top <span id="topVal"></span></label>
+      <input id="topSlider" type="range" min="0.20" max="0.55" step="0.01" />
+      <label>ROI left <span id="leftVal"></span></label>
+      <input id="leftSlider" type="range" min="0" max="0.30" step="0.01" />
+      <label>ROI width <span id="widthVal"></span></label>
+      <input id="widthSlider" type="range" min="0.50" max="1.00" step="0.01" />
+      <label>Line Y ratio (ROI 내부) <span id="lineVal"></span></label>
+      <input id="lineSlider" type="range" min="0.45" max="0.90" step="0.005" />
+      <label>min_move <span id="minMoveVal"></span></label>
+      <input id="minMoveSlider" type="range" min="1" max="8" step="1" />
+      <label>soft_margin_ratio <span id="softVal"></span></label>
+      <input id="softSlider" type="range" min="0.20" max="0.50" step="0.01" />
+      <p>
+        <button type="button" id="applySuggestBtn">제안선 적용</button>
+        <button type="button" id="saveBtn">저장</button>
+      </p>
+      <div id="saveMsg" class="meta"></div>
+    </div>
+    <div class="panel" style="flex:2 1 480px;">
+      <img id="preview" alt="ROI preview" />
+      <div class="legend meta">
+        <span class="c-roi">■ ROI 테두리</span>
+        <span class="c-line">■ 현재 라인</span>
+        <span class="c-sug">■ 제안 라인</span>
+      </div>
+      <div id="previewMeta" class="meta"></div>
+    </div>
+  </div>
+  <script>
+    const PATH_TRAFFIC = location.pathname.match(/^(\/traffic)(?=\\/|$)/);
+    const PATH_TUNING = location.pathname.match(/^(\/tuning)(?=\\/|$)/);
+    const BASE = PATH_TRAFFIC ? PATH_TRAFFIC[1] : (PATH_TUNING ? "/traffic" : "");
+    const dashboardLink = document.getElementById("dashboardLink");
+    if (dashboardLink) dashboardLink.href = (BASE || "/traffic") + "/";
+    const siteSelect = document.getElementById("siteSelect");
+    const sliders = {
+      top: document.getElementById("topSlider"),
+      left: document.getElementById("leftSlider"),
+      width: document.getElementById("widthSlider"),
+      line_y_ratio: document.getElementById("lineSlider"),
+      min_move: document.getElementById("minMoveSlider"),
+      soft_margin_ratio: document.getElementById("softSlider"),
+    };
+    const labels = {
+      top: document.getElementById("topVal"),
+      left: document.getElementById("leftVal"),
+      width: document.getElementById("widthVal"),
+      line_y_ratio: document.getElementById("lineVal"),
+      min_move: document.getElementById("minMoveVal"),
+      soft_margin_ratio: document.getElementById("softVal"),
+    };
+    let currentKey = "";
+    let suggested = null;
+    let previewTimer = null;
 
-        function stopRotation() {
-          if (!isRunning) return;
-          fetch("/rotation/stop", { method: "POST" })
-            .then(res => {
-              if (!res.ok) throw new Error("stop_failed");
-              if (wsPingTimer) {
-                clearInterval(wsPingTimer);
-                wsPingTimer = null;
-              }
-              if (wsInfer) {
-                try {
-                  wsInfer.close();
-                } catch (_) {}
-                wsInfer = null;
-              }
-              if (statusTimer) {
-                clearInterval(statusTimer);
-                statusTimer = null;
-              }
-              setRunUi(false);
-            })
-            .catch(() => alert("정지 요청 실패"));
-        }
+    function cfgFromSliders() {
+      return {
+        top: parseFloat(sliders.top.value),
+        left: parseFloat(sliders.left.value),
+        width: parseFloat(sliders.width.value),
+        line_y_ratio: parseFloat(sliders.line_y_ratio.value),
+        min_move: parseFloat(sliders.min_move.value),
+        soft_margin_ratio: parseFloat(sliders.soft_margin_ratio.value),
+      };
+    }
 
-        function initFromServer() {
-          // 서버가 이미 로테이션 중이면, 프론트도 즉시 "실행 중"으로 동기화
-          fetch("/rotation/status")
-            .then(r => r.json())
-            .then((d) => {
-              const running = !!d.sequencer_running;
-              setRunUi(running);
-              startStatusPolling();
-              startDetectionWebSocket();
-            })
-            .catch(() => {
-              // 서버 상태를 못 읽어도, WS/폴링은 붙여서 사용자가 진단할 수 있게 둔다
-              startStatusPolling();
-              startDetectionWebSocket();
-            });
-        }
+    function setSliders(cfg) {
+      const c = cfg || {};
+      sliders.top.value = c.top ?? 0.38;
+      sliders.left.value = c.left ?? 0;
+      sliders.width.value = c.width ?? 1;
+      sliders.line_y_ratio.value = c.line_y_ratio ?? 0.72;
+      sliders.min_move.value = c.min_move ?? 2;
+      sliders.soft_margin_ratio.value = c.soft_margin_ratio ?? 0.36;
+      for (const k of Object.keys(sliders)) {
+        labels[k].textContent = sliders[k].value;
+      }
+    }
 
-        // 최초 진입 시 서버 상태 반영
-        loadDebugSites();
-        initFromServer();
-      </script>
-    </body>
-    </html>
-    """
+    async function loadSites() {
+      const res = await fetch(BASE + "/rotation/camera-config");
+      const data = await res.json();
+      siteSelect.innerHTML = "";
+      for (const row of data.sites || []) {
+        const opt = document.createElement("option");
+        opt.value = row.key;
+        opt.textContent = row.key;
+        siteSelect.appendChild(opt);
+      }
+      if (siteSelect.options.length) {
+        currentKey = siteSelect.value;
+        setSliders((data.sites.find(s => s.key === currentKey) || {}).config);
+        schedulePreview(true);
+      }
+    }
+
+    function schedulePreview(immediate) {
+      if (previewTimer) clearTimeout(previewTimer);
+      previewTimer = setTimeout(() => fetchPreview(), immediate ? 0 : 180);
+    }
+
+    async function fetchPreview() {
+      if (!currentKey) return;
+      const q = new URLSearchParams(cfgFromSliders());
+      const res = await fetch(BASE + "/rotation/camera-config/" + encodeURIComponent(currentKey) + "/preview?" + q);
+      const data = await res.json();
+      suggested = data.suggested_line_y_ratio ?? null;
+      if (data.preview_jpeg_b64) {
+        document.getElementById("preview").src = "data:image/jpeg;base64," + data.preview_jpeg_b64;
+      }
+      const roi = data.roi || {};
+      document.getElementById("previewMeta").textContent =
+        (data.frame_available ? "프레임 수신됨" : "프레임 없음(로테이션 대기)") +
+        " | line_y_roi=" + (roi.line_y_roi_px ?? "-") +
+        " | 제안=" + (suggested != null ? suggested.toFixed(3) : "-") +
+        (data.delta_ratio != null ? " | Δ=" + data.delta_ratio : "");
+    }
+
+    async function saveConfig() {
+      const res = await fetch(BASE + "/rotation/camera-config/" + encodeURIComponent(currentKey), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(cfgFromSliders()),
+      });
+      const data = await res.json();
+      document.getElementById("saveMsg").textContent = data.ok ? "저장됨: " + currentKey : (data.message || "실패");
+      if (data.config) setSliders(data.config);
+    }
+
+    for (const k of Object.keys(sliders)) {
+      sliders[k].addEventListener("input", () => {
+        labels[k].textContent = sliders[k].value;
+        schedulePreview(false);
+      });
+    }
+    siteSelect.addEventListener("change", () => {
+      currentKey = siteSelect.value;
+      fetch(BASE + "/rotation/camera-config/" + encodeURIComponent(currentKey))
+        .then(r => r.json())
+        .then(d => { setSliders(d.config); schedulePreview(true); });
+    });
+    document.getElementById("refreshBtn").addEventListener("click", () => schedulePreview(true));
+    document.getElementById("applySuggestBtn").addEventListener("click", () => {
+      if (suggested != null) {
+        sliders.line_y_ratio.value = Math.min(0.90, Math.max(0.45, suggested)).toFixed(3);
+        labels.line_y_ratio.textContent = sliders.line_y_ratio.value;
+        schedulePreview(true);
+      }
+    });
+    document.getElementById("saveBtn").addEventListener("click", saveConfig);
+    loadSites();
+  </script>
+</body>
+</html>
+"""

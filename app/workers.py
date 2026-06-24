@@ -220,30 +220,26 @@ def yolo_worker(main_loop: asyncio.AbstractEventLoop | None) -> None:
         h, w = frame.shape[:2]
 
         camera_cfg = get_camera_config(cctv_name)
-        roi_cfg = {**default_roi_cfg, **camera_cfg}
+        from app.roi_geometry import compute_line_y, compute_roi_rect, crossing_params_for_camera
 
-        roi_top_ratio = float(roi_cfg.get("roi_top", roi_cfg.get("top", ROI_TOP_RATIO)))
-        roi_y0 = int(h * roi_top_ratio)
-        roi_y0 = max(0, min(h - 6, roi_y0))
-        left_ratio = min(0.95, max(0.0, float(roi_cfg.get("roi_left", roi_cfg.get("left", 0.0)))))
-        width_ratio = min(1.0, max(0.2, float(roi_cfg.get("roi_width", roi_cfg.get("width", 1.0)))))
-        roi_x0 = int(w * left_ratio)
-        roi_w = int(w * width_ratio)
-        roi_x1 = min(w, roi_x0 + roi_w)
+        roi_y0, roi_x0, roi_x1, roi_h, _roi_w = compute_roi_rect(
+            h, w, camera_cfg, default_top=ROI_TOP_RATIO
+        )
         roi = frame[roi_y0:h, roi_x0:roi_x1]
-
-        roi_h = max(1, h - roi_y0)
-        if "line_y" in camera_cfg:
-            line_y = int(float(camera_cfg["line_y"]))
-            line_y = max(2, min(roi_h - 3, line_y))
-            line_y_global = roi_y0 + line_y
-        else:
-            line_y_ratio = float(get_line_y_ratio_for_cctv(cctv_name))
-            line_y_global = max(2, min(h - 3, int(line_y_ratio * h)))
-            line_y = max(2, min(roi_h - 3, int(line_y_global - roi_y0)))
-        decision_min_move = float(effective_min_move)
-        decision_soft_min_dy = float(flow_soft_min_dy)
-        decision_soft_margin = int(line_soft_margin)
+        line_y, line_y_global = compute_line_y(
+            camera_cfg,
+            frame_h=h,
+            roi_y0=roi_y0,
+            roi_h=roi_h,
+            default_line_y_ratio=float(get_line_y_ratio_for_cctv(cctv_name)),
+        )
+        decision_min_move, decision_soft_min_dy, decision_soft_margin = crossing_params_for_camera(
+            camera_cfg,
+            roi_h=roi_h,
+            default_min_move=effective_min_move,
+            default_soft_min_dy=flow_soft_min_dy,
+            default_soft_margin=line_soft_margin,
+        )
         infer_seq_per_cctv[cctv_name] = infer_seq_per_cctv.get(cctv_name, 0) + 1
         infer_n = infer_seq_per_cctv[cctv_name]
 
@@ -547,6 +543,8 @@ def sequential_cctv_loop(main_loop: asyncio.AbstractEventLoop) -> None:
             CCTV_ROTATION_SEC,
             YOLO_INGEST_URL,
             get_effective_rotation_sites,
+            get_rotation_parallel_slots,
+            rotation_active_names,
         )
     except ImportError:
         return
@@ -575,8 +573,18 @@ def sequential_cctv_loop(main_loop: asyncio.AbstractEventLoop) -> None:
         st.rotation_telemetry["ingest_mode"] = "per_site_ffmpeg"
         st.rotation_telemetry["yolo_ingest_url_set"] = bool(ingest_url)
 
-    with st.rotation_tag_lock:
-        st.rotation_active_cctv = ordered[0][0]
+    parallel_slots = get_rotation_parallel_slots()
+    site_names = [n for n, _ in ordered]
+    window_start = 0
+
+    def _set_active_group(start: int) -> list[str]:
+        group = rotation_active_names(site_names, start, slots=parallel_slots)
+        with st.rotation_tag_lock:
+            st.rotation_active_cctv = group[0] if group else ""
+            st.rotation_active_group = list(group)
+        return group
+
+    _set_active_group(0)
 
     try:
         from app.config import FRAME_HEIGHT, FRAME_WIDTH
@@ -684,10 +692,24 @@ def sequential_cctv_loop(main_loop: asyncio.AbstractEventLoop) -> None:
         t.start()
         stream_threads.append(t)
 
-    cam_idx = 0
+    window_start = 0
     dwell_start = time.monotonic()
-    last_seg_cctv: str | None = None
+    last_group: tuple[str, ...] = ()
     current_dwell_sec = float(CCTV_ROTATION_SEC)
+    n_sites = len(ordered)
+
+    def _broadcast_group(group: list[str]) -> None:
+        nonlocal last_group
+        key = tuple(group)
+        if key == last_group:
+            return
+        last_group = key
+        schedule_broadcast(
+            main_loop,
+            ws_segment_message(cctv=group[0] if group else "", cctvs=group),
+        )
+
+    _broadcast_group(_set_active_group(0))
 
     try:
         while not st.sequencer_stop.is_set():
@@ -696,20 +718,9 @@ def sequential_cctv_loop(main_loop: asyncio.AbstractEventLoop) -> None:
                 continue
 
             if time.monotonic() - dwell_start >= float(current_dwell_sec):
-                cam_idx = (cam_idx + 1) % len(ordered)
+                window_start = (window_start + parallel_slots) % max(n_sites, 1)
                 dwell_start = time.monotonic()
-
-            cctv_name, _ = ordered[cam_idx]
-
-            with st.rotation_tag_lock:
-                st.rotation_active_cctv = cctv_name
-
-            if cctv_name != last_seg_cctv:
-                schedule_broadcast(
-                    main_loop,
-                    ws_segment_message(cctv=cctv_name),
-                )
-                last_seg_cctv = cctv_name
+                _broadcast_group(_set_active_group(window_start))
 
             time.sleep(0.05)
     finally:

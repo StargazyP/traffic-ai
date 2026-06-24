@@ -87,6 +87,8 @@ _segment_lock = threading.Lock()
 frame_queues: dict[str, Queue] = {}
 frame_queues_lock = threading.Lock()
 frame_queues_revision: int = 0
+last_frames: dict[str, Any] = {}
+last_frames_lock = threading.Lock()
 yolo_thread: threading.Thread | None = None
 
 MODEL_PATH = os.getenv("MODEL_PATH", "models/yolov8n.pt")
@@ -97,6 +99,9 @@ trackers_lock = threading.Lock()
 
 rotation_tag_lock = threading.Lock()
 rotation_active_cctv: str = ""
+rotation_active_group: list[str] = []
+rotation_stream_urls: dict[str, str] = {}
+rotation_stream_urls_lock = threading.Lock()
 
 rotation_telemetry_lock = threading.Lock()
 rotation_telemetry: dict = {
@@ -151,6 +156,11 @@ def get_or_create_queue(cctv_name: str) -> Queue:
 
 def put_latest(q: Queue, item: dict) -> None:
     """큐가 가득 차면 오래된 프레임을 버리고 최신 프레임 삽입."""
+    cctv = (item.get("cctv") or "").strip()
+    frame = item.get("frame")
+    if cctv and frame is not None:
+        with last_frames_lock:
+            last_frames[cctv] = frame
     try:
         q.put_nowait(item)
     except Full:

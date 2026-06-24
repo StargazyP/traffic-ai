@@ -1,5 +1,5 @@
 # Demo
-[GitHub Demo Link](https://jangdonggun.duckdns.org/traffic/)
+**Live:** [https://stargazyp.com/traffic/](https://stargazyp.com/traffic/)
 # traffic-ai
 
 A **FastAPI** service that ingests **CCTV HLS/RTSP streams** (e.g. from the national ITS center), tracks vehicles with **YOLOv8 + ByteTrack**, aggregates **up/down traffic** using a **hybrid rule set** (virtual line crossing “hard” counts plus flow-based “soft” correction), batch-writes results to **MySQL**, and pushes **metadata only** to dashboards over **WebSocket** (no raw video on the wire).
@@ -71,10 +71,12 @@ flowchart TB
 
 ### Recent updates
 
-- Seoul inbound CCTV rotation now uses site-specific ROI and virtual-line tuning from `app/config.py`.
-- ITS API access no longer has an embedded fallback key; set `ITS_API_KEY` in `.env` or provide `CCTV_URL*` values directly.
-- Docker and DB defaults now read from environment variables, and runtime artifacts such as `.env`, model weights, logs, captures, local DB files, and videos are ignored.
-- MySQL persistence includes a `vehicle_count_hourly` rollup migration for lower long-running storage pressure.
+- **2026-05-27** — ROI calibration/geometry, rotation health & sites cache, ITS guard, boot retry, `traffic_data_api` sidecar, YOLO runtime split; secrets only via `.env` (see `.env.example`).
+- **2026-05-14** — Live demo URL updated for portfolio gateway.
+- Seoul inbound CCTV rotation uses site-specific ROI and virtual-line tuning from `app/config.py`.
+- ITS API access has no embedded fallback key; set `ITS_API_KEY` in `.env` or provide `CCTV_URL*` values directly.
+- Docker and DB defaults read from environment variables; runtime artifacts (`.env`, weights, logs, captures, local DB, videos) stay out of Git.
+- MySQL persistence includes `vehicle_count_hourly` rollup for lower long-running storage pressure.
 
 ### Main modules
 

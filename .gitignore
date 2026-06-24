@@ -25,6 +25,8 @@ backups/
 
 # 런타임 산출물·데이터
 logs/
+data/
+traffic_data_api/.git/
 *.log
 *.db
 *.sqlite

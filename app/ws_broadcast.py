@@ -18,18 +18,23 @@ def schedule_broadcast(loop: asyncio.AbstractEventLoop | None, data: dict) -> No
         coro.close()
 
 
-def ws_segment_message(*, cctv: str) -> dict:
+def ws_segment_message(*, cctv: str, cctvs: list[str] | None = None) -> dict:
     from datetime import datetime
 
+    group = [x for x in (cctvs or []) if x]
+    if not group and cctv:
+        group = [cctv]
+    primary = group[0] if group else cctv
     return {
         "type": "segment",
-        "cctv": cctv,
+        "cctv": primary,
+        "cctvs": group,
         "timestamp": datetime.now().isoformat(),
     }
 
 
 def ws_detection_message(payload: dict) -> dict:
-    """YOLO 결과만 (bbox·카운트·스케일용 메타). 영상 바이너리·stream_url 없음."""
+    """Dashboard + ROI 메타 (JPEG는 /rotation/debug-image/{cctv} 폴링)."""
     return {
         "type": "detection",
         "cctv": payload.get("cctv", ""),
@@ -77,5 +82,4 @@ def ws_detection_message(payload: dict) -> dict:
         "persisted_tracks": payload.get("persisted_tracks", 0),
         "counted_tracks": payload.get("counted_tracks", 0),
         "timestamp": payload.get("timestamp", ""),
-        "debug_image": payload.get("debug_image", ""),
     }

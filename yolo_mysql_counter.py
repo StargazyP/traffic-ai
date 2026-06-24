@@ -33,6 +33,7 @@ MIN_MOVE = 1
 BATCH_SIZE = 10
 
 batch_buffer: list[tuple[str, int, int, int, int]] = []
+_batch_lock = threading.Lock()
 
 
 def _iter_ffmpeg_frames(
@@ -120,13 +121,18 @@ def add_to_batch(
     down_soft: int = 0,
 ) -> None:
     """누적 카운트: (상·하행 hard) + 선택적 soft. DB 스키마에 맞게 insert_batch가 처리."""
-    global batch_buffer
-    batch_buffer.append((cctv_name, up_count, down_count, up_soft, down_soft))
-    if len(batch_buffer) >= BATCH_SIZE:
-        flush_batch()
+    with _batch_lock:
+        batch_buffer.append((cctv_name, up_count, down_count, up_soft, down_soft))
+        if len(batch_buffer) >= BATCH_SIZE:
+            _flush_batch_unlocked()
 
 
 def flush_batch() -> None:
+    with _batch_lock:
+        _flush_batch_unlocked()
+
+
+def _flush_batch_unlocked() -> None:
     global batch_buffer
     if not batch_buffer:
         return

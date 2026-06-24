@@ -1,4 +1,6 @@
 # 2026-04-28: DB 시간 단위 압축 스케줄러 기동/종료 로직 추가.
+# NOTE: 실제 배포(uvicorn app.main:app)는 main.py 안의 lifespan을 씁니다.
+# 시간 단위 통합(rollup) 스레드도 그쪽에서 기동합니다. 이 파일은 분리된 참조용입니다.
 """FastAPI lifespan: start rotation workers on boot, join threads on shutdown."""
 
 from __future__ import annotations
@@ -12,6 +14,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app import state as st
+from app.boot_rotation_retry import halt_rotation_boot_retry, spawn_rotation_boot_retry
 from app.rotation_service import rotation_start_impl
 from db_mysql import run_hourly_compression_loop
 
@@ -31,10 +34,19 @@ async def lifespan(app: FastAPI):
         err = boot.get("error")
         if err == "no_sites":
             logger.warning(
-                "서버 기동 시 로테이션 미시작: 유효한 스트림 URL이 없습니다(.env·ITS API)."
+                "서버 기동 시 로테이션 미시작: 유효한 스트림 URL이 없습니다(.env·ITS API). "
+                "백그라운드에서 재시도합니다(%s 초 간격).",
+                os.getenv("ROTATION_BOOT_RETRY_INTERVAL_SEC", "15"),
             )
+            spawn_rotation_boot_retry(app, rotation_start_impl)
         elif err == "no_loop":
             logger.warning("서버 기동 시 로테이션 미시작: main_loop 없음")
+        elif err in {"its_quota_exceeded", "its_unauthorized", "its_forbidden", "its_autofetch_disabled"}:
+            logger.warning(
+                "서버 기동 시 로테이션 미시작(%s): ITS 호출이 영구 차단 상태이므로 자동 재시도하지 않습니다. "
+                ".env 에 CCTV_URL/CCTV_URL_* 를 지정하거나, 한도 회복 후 /rotation/start 로 수동 재시작하세요.",
+                err,
+            )
         else:
             logger.warning("서버 기동 시 로테이션 미시작: %s", boot)
 
@@ -64,6 +76,8 @@ async def lifespan(app: FastAPI):
         )
 
     yield
+
+    halt_rotation_boot_retry()
 
     with st.sequencer_lock:
         st.sequencer_stop.set()

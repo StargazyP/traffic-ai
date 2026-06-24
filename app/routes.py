@@ -11,8 +11,13 @@ from fastapi.responses import HTMLResponse, Response
 
 from app import html_pages
 from app import state as st
+from app.its_guard import its_autofetch_disabled
 from app.its_client import get_cctv_list
-from app.rotation_service import rotation_sites_configured, rotation_start_impl
+from app.rotation_service import (
+    rotation_sites_configured,
+    rotation_start_impl,
+    rotation_status_payload,
+)
 from app.ws_broadcast import schedule_broadcast, ws_detection_message
 from event_bus import event_bus
 
@@ -22,45 +27,44 @@ router = APIRouter()
 
 @router.get("/preview-sites")
 def preview_sites():
-    """하단 미리보기 드롭다운용: 로테이션과 동일한 지점 이름·스트림 URL."""
-    sites = rotation_sites_configured()
-    try:
-        from app.config import CCTV_URL as _def
+    """Public site list for the dashboard. Do not expose source stream URLs."""
+    from app.config import peek_idle_rotation_diagnose
+    from app.rotation_health import build_rotation_health
 
-        raw = (_def or "").strip()
-        if raw == "여기에 m3u8 URL":
-            raw = ""
+    sites = rotation_sites_configured()
+    idle = peek_idle_rotation_diagnose() if not sites else {}
+    try:
+        rotation_health = build_rotation_health(sites=sites, infer_total=0, sequencer_running=False)
     except Exception:
-        raw = ""
+        rotation_health = {"system_ok": bool(sites), "alert": None}
+    idle_out = idle or None
+    alert = rotation_health.get("alert") if isinstance(rotation_health, dict) else None
+    if alert and isinstance(alert, dict):
+        idle_out = {
+            "code": alert.get("its_error_code") or alert.get("its_api_result_code") or "error",
+            "message": alert.get("message") or "",
+            "title": alert.get("title") or "",
+            "its_api_result_code": alert.get("its_api_result_code") or "",
+        }
     return {
-        "sites": [{"name": n, "url": u} for n, u in sites],
-        "default_preview_url": raw,
+        "sites": [{"name": n} for n, _ in sites],
+        "default_preview_url": "",
+        "effective_site_count": len(sites),
+        "idle_reason": idle_out,
+        "rotation_health": rotation_health,
     }
+
+
+@router.get("/its/health")
+def its_health():
+    from app.rotation_health import probe_its_api_health
+
+    return probe_its_api_health()
 
 
 @router.get("/favicon.ico")
 def favicon():
     return Response(status_code=204)
-
-
-@router.get("/cctv-list")
-def cctv_list(
-    minX: float | None = Query(None),
-    maxX: float | None = Query(None),
-    minY: float | None = Query(None),
-    maxY: float | None = Query(None),
-    cctv_type: str | None = Query(None, alias="cctvType"),
-    road_type: str | None = Query(None, alias="type"),
-):
-    params = {
-        "minX": minX,
-        "maxX": maxX,
-        "minY": minY,
-        "maxY": maxY,
-        "cctvType": cctv_type,
-        "type": road_type,
-    }
-    return get_cctv_list(params)
 
 
 @router.get("/count-status")
@@ -77,39 +81,6 @@ def get_count_status():
                 "down_count",
                 st.detection_status.get("down_count", 0),
             ),
-            "main_flow_count": st.count_status.get(
-                "main_flow_count",
-                st.detection_status.get("main_flow_count", 0),
-            ),
-            "direction_score": st.count_status.get(
-                "direction_score",
-                st.detection_status.get("direction_score", 0.0),
-            ),
-            "flow_per_sec": st.count_status.get(
-                "flow_per_sec",
-                st.detection_status.get("flow_per_sec", 0.0),
-            ),
-            "duration_sec": st.count_status.get(
-                "duration_sec",
-                st.detection_status.get("duration_sec", 0.0),
-            ),
-            "time_bucket": st.count_status.get(
-                "time_bucket",
-                st.detection_status.get("time_bucket", ""),
-            ),
-            "bucket_lag_sec": st.count_status.get(
-                "bucket_lag_sec",
-                st.detection_status.get("bucket_lag_sec", 0.0),
-            ),
-            "is_valid": st.count_status.get(
-                "is_valid",
-                st.detection_status.get("is_valid", True),
-            ),
-            "invalid_reason": st.count_status.get(
-                "invalid_reason",
-                st.detection_status.get("invalid_reason", ""),
-            ),
-            "logs": list(st.count_status["logs"]),
         }
 
 
@@ -123,6 +94,14 @@ def start_count(request: Request, id: int = Query(..., ge=0)):
             detail=f"counter dependency missing: {exc}. run `pip install -r requirements.txt`",
         )
     
+    if its_autofetch_disabled():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "ITS_AUTOFETCH_DISABLED=1 로 /start-count 가 ITS 목록을 조회하지 않습니다. "
+                "CCTV_URL 로 직접 스트림을 지정하거나 환경변수를 해제하세요."
+            ),
+        )
     cctvs = get_cctv_list()
     if id >= len(cctvs):
         raise HTTPException(status_code=404, detail="CCTV id not found")
@@ -254,6 +233,22 @@ def stop_count():
     return {"ok": True, "message": "counter stopped"}
 
 
+@router.post("/rotation/refresh-sites-cache")
+def rotation_refresh_sites_cache(force_its: bool = Query(False)):
+    """ITS에서 CCTV URL을 다시 받아 data/rotation_sites_cache.json 에 저장."""
+    from app.config import refresh_rotation_sites_from_its
+
+    result = refresh_rotation_sites_from_its(force=True, force_its=force_its)
+    if result.get("skipped"):
+        return result
+    if not result.get("ok"):
+        raise HTTPException(
+            status_code=502,
+            detail=result.get("error") or "ITS에서 스트림 URL을 가져오지 못했습니다.",
+        )
+    return result
+
+
 @router.post("/rotation/start")
 def rotation_start(request: Request):
     """서울 유입 핵심 CCTV 순차 캡처 시작. URL은 환경변수 또는 ITS API에서 조회."""
@@ -310,19 +305,8 @@ def rotation_stop():
 
 @router.get("/rotation/status")
 def rotation_status():
-    """브라우저 CCTV와 무관하게, 서버 YOLO가 프레임을 받고 추론 중인지 확인."""
-    with st.rotation_telemetry_lock:
-        tel = dict(st.rotation_telemetry)
-    with st.sequencer_lock:
-        running = st.sequencer_thread is not None and st.sequencer_thread.is_alive()
-    with st.status_lock:
-        cnt = int(st.count_status.get("count") or 0)
-        cname = st.count_status.get("cctv_name") or ""
-    return {
-        "sequencer_running": running,
-        "telemetry": tel,
-        "count_status_summary": {"cctv_name": cname, "count": cnt},
-    }
+    """로테이션 상태·YOLO 텔레메트리(디버그 화면용)."""
+    return rotation_status_payload()
 
 @router.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):

@@ -55,7 +55,11 @@ def get_tracker(cctv_name: str) -> Any:
     """CCTV마다 별도 ByteTrack 상태 (track id 혼선 방지)."""
     with st.trackers_lock:
         if cctv_name not in st.trackers:
-            st.trackers[cctv_name] = BYTETracker(make_bytetrack_args(), frame_rate=30)
+            args = make_bytetrack_args()
+            try:
+                st.trackers[cctv_name] = BYTETracker(args, frame_rate=30)
+            except TypeError:
+                st.trackers[cctv_name] = BYTETracker(args)
         return st.trackers[cctv_name]
 
 
