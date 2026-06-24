@@ -1,101 +1,45 @@
-# Demo
-**Live:** [https://stargazyp.com/traffic/](https://stargazyp.com/traffic/)
 # traffic-ai
 
-A **FastAPI** service that ingests **CCTV HLS/RTSP streams** (e.g. from the national ITS center), tracks vehicles with **YOLOv8 + ByteTrack**, aggregates **up/down traffic** using a **hybrid rule set** (virtual line crossing “hard” counts plus flow-based “soft” correction), batch-writes results to **MySQL**, and pushes **metadata only** to dashboards over **WebSocket** (no raw video on the wire).
+국가 ITS·CCTV HLS/RTSP 영상에서 **차량을 실시간 추적·집계**하고, 대시보드와 REST API로 교통량을 제공하는 서비스입니다.
+
+**Live:** [https://stargazyp.com/traffic/](https://stargazyp.com/traffic/)
 
 Repository: [github.com/StargazyP/traffic-ai](https://github.com/StargazyP/traffic-ai)
 
 ---
 
-## Expected outcomes
+## 주요 기능
 
-- **Multi-site operation**: Rotate across Seoul inbound CCTV sites with one shared GPU and a single YOLO worker thread.
-- **Efficient telemetry**: Avoid streaming full frames over WebSocket; send bounding boxes, counts, and optional ROI debug snapshots (JPEG base64) only.
-- **Operational flexibility**: Resolve stream URLs via the ITS OpenAPI or pin per-site URLs through environment configuration.
-- **Stable browser playback**: Mitigate Referer/cookie issues for KT/ITS-style HLS using the built-in **`/hls` proxy**.
-- **Quantitative records**: Persist site, direction, and hard/soft splits in the schema for traffic analysis and monitoring.
+- **다중 CCTV 순환 분석** — 서울 inbound 등 여러 지점을 GPU 워커로 순환하며 YOLO 추론
+- **차량 추적·카운팅** — YOLOv8 + ByteTrack, ROI 가상선 기준 상행/하행·hard/soft 집계
+- **실시간 대시보드** — WebSocket으로 bbox·카운트·세그먼트 메타데이터 전송 (영상 스트림 미전송)
+- **HLS 프록시** — ITS/K-T style Referer·쿠키 이슈 완화용 `/hls` 내장 프록시
+- **ROI 튜닝 UI** — [https://stargazyp.com/tuning/](https://stargazyp.com/tuning/) 에서 카메라별 ROI·가상선 보정
+- **교통량 REST API** — `traffic_data_api` 사이드카 (`/traffic-api/` 경로, portfolio 게이트웨이 연동)
+- **MySQL 적재** — 분 단위 배치 insert, `vehicle_count_hourly` 시간대 롤업
 
----
+## 사용 시나리오
 
-## Architecture overview
+1. 브라우저에서 Live 대시보드 접속 → 현재 순환 중인 CCTV와 실시간 검출·카운트 확인
+2. ROI/가상선 조정 후 rotation 재시작 → 집계 정확도 개선
+3. REST API로 사이트·방향별 시간대 교통량 조회 (cctv-map 등 연동)
 
-![traffic-ai architecture](docs/architecture.svg)
+## 서버 구성 (요약)
 
-```mermaid
-flowchart TB
-  subgraph clients [Clients]
-    B[Browser dashboard]
-  end
-  subgraph server [FastAPI server]
-    API[app.main / app.routes]
-    CFG[env-driven config]
-    SEQ[Rotation service: Seoul inbound sites]
-    FF[FFmpeg threads: per-stream raw BGR]
-    Q[Per-CCTV frame queues]
-    YO[yolo_worker: single-thread round-robin inference]
-    EB[event_bus WebSocket broadcast]
-    HLS[hls_proxy /hls]
-    DBL[db_mysql batch insert + hourly rollup]
-  end
-  subgraph external [External systems]
-    ITS[ITS OpenAPI cctvInfo]
-    CDN[HLS/RTSP upstream]
-    DB[(MySQL)]
-  end
-  B -->|GET / POST /rotation| API
-  B -->|WS /ws| API
-  B -->|HLS playback| HLS
-  API --> CFG
-  HLS --> CDN
-  CFG -. ITS_API_KEY .-> ITS
-  API --> SEQ
-  SEQ --> FF
-  FF --> CDN
-  FF --> Q
-  Q --> YO
-  YO --> EB
-  YO --> DBL
-  DBL --> DB
-  SEQ --> EB
-  B --> EB
-```
-
-### Data flow (summary)
-
-1. **Ingest**: Per site, FFmpeg decodes HLS/RTSP to `rawvideo` BGR frames; each CCTV name gets a **short queue** keeping mostly the latest frame.
-2. **Inference**: One global **YOLO** model plus **per-CCTV ByteTrack** state; only vehicle-related COCO classes are kept.
-3. **Counting**: Inside the ROI, a virtual line (`LINE_Y_RATIO`, etc.) drives **hard** (line crossing) vs **soft** (near-line flow) decisions; each `track_id` is counted once until it goes stale.
-4. **Delivery**: `event_bus` pushes JSON with `type: detection` and `type: segment` to `/ws` subscribers—no video payload.
-5. **Persistence**: `yolo_mysql_counter` batches into `db_mysql.insert_batch`; `db_mysql` also maintains hourly rollups in `vehicle_count_hourly`.
-
-### Recent updates
-
-- **2026-05-27** — ROI calibration/geometry, rotation health & sites cache, ITS guard, boot retry, `traffic_data_api` sidecar, YOLO runtime split; secrets only via `.env` (see `.env.example`).
-- **2026-05-14** — Live demo URL updated for portfolio gateway.
-- Seoul inbound CCTV rotation uses site-specific ROI and virtual-line tuning from `app/config.py`.
-- ITS API access has no embedded fallback key; set `ITS_API_KEY` in `.env` or provide `CCTV_URL*` values directly.
-- Docker and DB defaults read from environment variables; runtime artifacts (`.env`, weights, logs, captures, local DB, videos) stay out of Git.
-- MySQL persistence includes `vehicle_count_hourly` rollup for lower long-running storage pressure.
-
-### Main modules
-
-| Path | Role |
+| 구성 | 기술 |
 |------|------|
-| `app/main.py` | FastAPI app, rotation and YOLO workers, WebSocket, minimal HTML dashboard |
-| `app/config.py` | Loads `.env` via `python-dotenv`; CCTV, YOLO, and HLS proxy settings |
-| `app/hls_proxy.py` | `/hls/register`, `/hls/play/{tid}` — m3u8 rewrite and Referer fallback |
-| `app/its_client.py` / `app/its_rotation.py` | ITS API listing and pattern matching for the Seoul inbound rotation sites |
-| `yolo_mysql_counter.py` | Single-CCTV counter paths (`run_counter_stream`, etc.) and FFmpeg piping |
-| `db_mysql.py` | MySQL connectivity, hybrid-column-aware batch insert, and hourly rollup compression |
-| `event_bus.py` | WebSocket fan-out |
+| 앱 | Python 3.11, FastAPI, Uvicorn |
+| AI | YOLOv8, ByteTrack, FFmpeg (HLS/RTSP 디코드) |
+| DB | MySQL 8 |
+| 배포 | Docker Compose (별도 스택), portfolio nginx `/traffic/` · `/traffic-api/` |
 
-### Configuration and repository hygiene
+로컬 실행: `.env.example` → `.env` 복사 후 `docker compose up -d --build`. API 키·DB 비밀번호는 저장소에 올리지 마세요.
 
-Copy `.env.example` to `.env` for local runtime values. Keep real API keys, stream URLs, DB passwords, model weights, captures, and local data out of Git; `.gitignore` and `.dockerignore` are configured for those artifacts.
+## Changelog
 
----
+- **2026-06-24** — README 기능 중심 정리, portfolio webhook CI/CD 연동.
+- **2026-05-27** — ROI calibration, rotation health, ITS guard, `traffic_data_api`, env 분리.
 
 ## Compliance
 
-Use of the ITS OpenAPI and third-party CCTV streams must follow each provider’s terms and key policies. This document describes the software design only; review security and network policies before any production deployment.
+ITS OpenAPI 및 제3자 CCTV 스트림 이용 시 각 제공자의 약관·키 정책을 준수하세요.
